@@ -29,6 +29,8 @@ namespace GravityPortals
         static readonly int MainTexId = Shader.PropertyToID("_MainTex");
         static readonly int HasViewId = Shader.PropertyToID("_HasView");
         static readonly int ThickId = Shader.PropertyToID("_Thick");
+        static readonly int ClarityId = Shader.PropertyToID("_Clarity");
+        float currentScale = -1f;
 
         Portal portal;
         Camera viewCamera;
@@ -89,10 +91,19 @@ namespace GravityPortals
             if (surface == null) return;
             // While the local player is passing through, thicken the surface into a box
             // behind the opening, so the camera never clips past it into the wall.
+            // Also when your camera is right at the opening: rendering runs faster than physics,
+            // so the camera can reach the surface a frame or two before the pass registers.
             var local = GravityPlayerController.Local;
             bool passing = local != null && local.IsIgnoring(portal);
-            float wanted = passing ? 0.9f : 0.02f;
-            thickness = Mathf.MoveTowards(thickness, wanted, Time.deltaTime * 20f);
+            var cam = Camera.main;
+            if (!passing && cam != null)
+            {
+                Vector3 c = transform.InverseTransformPoint(cam.transform.position);
+                passing = c.z < 0.8f && c.z > -0.9f
+                    && Mathf.Abs(c.x) < portal.size.x * 0.5f + 0.1f && Mathf.Abs(c.y) < portal.size.y * 0.5f + 0.1f;
+            }
+            // Thicken instantly (any delay can show a clipped frame), thin out gently.
+            thickness = passing ? 0.9f : Mathf.MoveTowards(thickness, 0.02f, Time.deltaTime * 4f);
             var t = surface.transform;
             t.localScale = new Vector3(portal.size.x, portal.size.y, thickness);
             t.localPosition = new Vector3(0f, 0f, 0.01f - thickness * 0.5f);
@@ -104,16 +115,24 @@ namespace GravityPortals
             if (viewCamera == null || material == null) return;
             var linked = portal.linkedPortal;
             Vector3 toCamera = main.transform.position - transform.position;
+            float distance = toCamera.magnitude;
+            // Nearby portals keep rendering even when just out of view, so turning around or
+            // stepping through never shows a stale frame (cameras switch on a frame late).
             bool visible = linked != null
                 && Vector3.Dot(toCamera, portal.Normal) > -1f
-                && toCamera.sqrMagnitude < maxDistance * maxDistance
-                && GeometryUtility.TestPlanesAABB(frustum, surface.bounds);
+                && distance < maxDistance
+                && (distance < 6f || GeometryUtility.TestPlanesAABB(frustum, surface.bounds));
 
             viewCamera.enabled = visible;
             material.SetFloat(HasViewId, visible ? 1f : 0f);
+            // Clean-look portals are always a clear opening; energy-look ones clear up as you approach.
+            material.SetFloat(ClarityId, portal.CleanLook ? 1f : Mathf.Clamp01((6f - distance) / 4f));
             if (!visible) return;
 
-            EnsureTarget(main);
+            // Full resolution up close (or for doorways), cheaper further away. The hysteresis
+            // keeps it from reallocating the texture every frame at the boundary.
+            float wantedScale = portal.doorway || distance < (currentScale >= 1f ? 14f : 12f) ? 1f : resolutionScale;
+            EnsureTarget(main, wantedScale);
 
             // Same view, seen through the linked portal.
             Matrix4x4 transfer = Portal.TransferMatrix(portal, linked);
@@ -142,10 +161,11 @@ namespace GravityPortals
                 : main.projectionMatrix;
         }
 
-        void EnsureTarget(Camera main)
+        void EnsureTarget(Camera main, float scale)
         {
-            int w = Mathf.Max(64, Mathf.RoundToInt(main.pixelWidth * resolutionScale));
-            int h = Mathf.Max(64, Mathf.RoundToInt(main.pixelHeight * resolutionScale));
+            currentScale = scale;
+            int w = Mathf.Max(64, Mathf.RoundToInt(main.pixelWidth * scale));
+            int h = Mathf.Max(64, Mathf.RoundToInt(main.pixelHeight * scale));
             if (target != null && target.width == w && target.height == h) return;
 
             if (target != null)

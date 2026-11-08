@@ -78,6 +78,10 @@ namespace GravityPortals
         bool jumpedSinceGrounded;
         bool wasGrounded;
         float lastFallSpeed;
+        Collider groundCollider;
+        StairSteps stairs;          // set while standing on a staircase
+        float stairTarget, stairOffset;
+        int lastStairStep = int.MinValue;
         float landDip;
         float stepDistance;
         [Tooltip("Seconds after walking off an edge during which you can still jump.")]
@@ -198,6 +202,7 @@ namespace GravityPortals
             recoilYaw = Mathf.Lerp(recoilYaw, 0f, settle);
 
             landDip = Mathf.Lerp(landDip, 0f, 1f - Mathf.Exp(-9f * Time.deltaTime));
+            UpdateGravityWarning();
             fovKick = Mathf.Lerp(fovKick, 0f, 1f - Mathf.Exp(-6f * Time.deltaTime));
             flashAlpha = Mathf.MoveTowards(flashAlpha, 0f, Time.deltaTime * 1.2f);
         }
@@ -268,7 +273,10 @@ namespace GravityPortals
             if (!IsLocallyControlled || viewCamera == null) return;
 
             Vector3 up = bodyRotation * Vector3.up;
-            viewCamera.transform.SetPositionAndRotation(transform.position + up * (eyeHeight - landDip), AimRotation);
+            // On stairs the camera rides on the tread under you: it lags the smooth ramp, then
+            // catches up quickly at each step edge, so climbing feels like steps.
+            stairOffset = Mathf.Lerp(stairOffset, stairTarget, 1f - Mathf.Exp(-22f * Time.deltaTime));
+            viewCamera.transform.SetPositionAndRotation(transform.position + up * (eyeHeight - landDip + stairOffset), AimRotation);
             viewCamera.fieldOfView = baseFov + fovKick;
         }
 
@@ -277,6 +285,9 @@ namespace GravityPortals
         void FixedUpdate()
         {
             if (!IsLocallyControlled || Body.isKinematic) return;
+
+            if (interpolationOffSteps > 0 && --interpolationOffSteps == 0)
+                Body.interpolation = RigidbodyInterpolation.Interpolate;
 
             float dt = Time.fixedDeltaTime;
             Body.rotation = bodyRotation;
@@ -312,21 +323,37 @@ namespace GravityPortals
             if (grounded)
             {
                 lateral = Vector3.MoveTowards(lateral, wish, groundAcceleration * dt);
-                stepDistance += lateral.magnitude * dt;
-                if (stepDistance > (sprinting ? 2.6f : 2.1f))
+                if (UpdateStairs(gravityUp))
                 {
-                    stepDistance = 0f;
-                    Sfx.Play2D(SoundBank.Footstep, 0.22f, UnityEngine.Random.Range(0.85f, 1.15f));
+                    stepDistance = 0f; // on stairs, footsteps come from each step instead
+                }
+                else
+                {
+                    stepDistance += lateral.magnitude * dt;
+                    if (stepDistance > (sprinting ? 2.6f : 2.1f))
+                    {
+                        stepDistance = 0f;
+                        Sfx.Play2D(SoundBank.Footstep, 0.22f, UnityEngine.Random.Range(0.85f, 1.15f));
+                    }
                 }
             }
-            else if (wish.sqrMagnitude > 0.01f)
+            else
             {
-                // Air control only adds speed up to the move speed and never brakes,
-                // so momentum carried out of a portal is preserved.
-                Vector3 wishDir = wish.normalized;
-                float current = Vector3.Dot(lateral, wishDir);
-                lateral += wishDir * Mathf.Clamp(speed - current, 0f, airAcceleration * dt);
+                stairs = null;
+                stairTarget = 0f;
+                if (wish.sqrMagnitude > 0.01f)
+                {
+                    // Air control only adds speed up to the move speed and never brakes,
+                    // so momentum carried out of a portal is preserved.
+                    Vector3 wishDir = wish.normalized;
+                    float current = Vector3.Dot(lateral, wishDir);
+                    lateral += wishDir * Mathf.Clamp(speed - current, 0f, airAcceleration * dt);
+                }
             }
+
+            // Stay planted: on the ground, never drift away from the surface (no bouncing off
+            // step edges or slopes). Jumping below replaces this.
+            if (grounded && Vector3.Dot(vertical, groundNormal) > 0f) vertical = Vector3.zero;
 
             bool canJump = (grounded || Time.time - lastGroundedTime < coyoteTime) && !jumpedSinceGrounded;
             if (canJump && Time.time <= jumpBufferedUntil)
@@ -351,17 +378,50 @@ namespace GravityPortals
             Body.linearVelocity = velocity;
         }
 
+        /// <summary>On a staircase: work out the tread under you for the camera, and play a
+        /// footstep each time you move onto a new step. Returns true while on stairs.</summary>
+        bool UpdateStairs(Vector3 gravityUp)
+        {
+            if (groundCollider == null || !groundCollider.TryGetComponent(out StairSteps s))
+            {
+                stairs = null;
+                stairTarget = 0f;
+                return false;
+            }
+
+            // The ramp surface right under you (along your up), not where the capsule touches it.
+            if (!groundCollider.Raycast(new Ray(Body.position, -gravityUp), out RaycastHit hit, capsule.height))
+                return stairs != null;
+
+            if (stairs != s) lastStairStep = int.MinValue;
+            stairs = s;
+            stairTarget = s.TreadOffset(hit.point, gravityUp);
+            int step = s.StepIndex(hit.point, gravityUp);
+            if (lastStairStep != int.MinValue && step != lastStairStep)
+                Sfx.Play2D(SoundBank.Footstep, 0.2f, UnityEngine.Random.Range(0.9f, 1.15f));
+            lastStairStep = step;
+            return true;
+        }
+
         void UpdateGround(Vector3 bodyUp, Vector3 gravityUp)
         {
+            // "Moving away from the ground" is judged against the surface we were on, not
+            // against gravity: walking up a 45-degree staircase moves you upward fast, but
+            // you're still on it.
+            Vector3 previousNormal = wasGrounded ? groundNormal : gravityUp;
             grounded = false;
+            groundCollider = null;
             groundNormal = gravityUp;
             if (Time.time < noGroundUntil) return;
-            if (Vector3.Dot(Body.linearVelocity, gravityUp) > 2f) return; // moving away from the ground
+            if (Vector3.Dot(Body.linearVelocity, previousNormal) > 2f) return;
 
             float radius = capsule.radius * 0.95f;
             float halfSegment = Mathf.Max(0f, capsule.height * 0.5f - capsule.radius);
+            // Reach a bit further while already grounded, so going down stairs or over a step
+            // edge keeps you on the ground instead of briefly going airborne (and sliding).
+            float reach = halfSegment + (wasGrounded ? 0.45f : 0.12f);
             int count = Physics.SphereCastNonAlloc(Body.position, radius, -bodyUp, hits,
-                halfSegment + 0.12f, ~0, QueryTriggerInteraction.Ignore);
+                reach, ~0, QueryTriggerInteraction.Ignore);
 
             float best = float.MaxValue;
             for (int i = 0; i < count; i++)
@@ -374,6 +434,7 @@ namespace GravityPortals
                 {
                     best = h.distance;
                     groundNormal = h.normal;
+                    groundCollider = h.collider;
                     grounded = true;
                 }
             }
@@ -400,12 +461,30 @@ namespace GravityPortals
             gravityDirection = Portal.GravityAfterPass(from, to, oldGravity);
             if (Vector3.Angle(oldGravity, gravityDirection) > 1f)
                 Sfx.Play2D(SoundBank.GravityShift, 0.4f, UnityEngine.Random.Range(0.95f, 1.05f));
-            grounded = false;
-            wasGrounded = false;
-            lastGroundedTime = -10f; // no coyote jump out of a portal
-            noGroundUntil = Time.time + 0.1f;
+
+            if (wasGrounded)
+            {
+                // Walked through (a doorway): stay on your feet the whole way, as if it were
+                // an ordinary door. The ground you were on carries through with you.
+                groundNormal = Portal.TransferRotation(from, to) * groundNormal;
+            }
+            else
+            {
+                // Fell or flew through: airborne on the other side.
+                grounded = false;
+                lastGroundedTime = -10f; // no coyote jump out of a portal
+                noGroundUntil = Time.time + 0.1f;
+            }
+
+            // Physics smoothing would blend between where you were and where you are now,
+            // drawing a frame or two of the camera halfway between the two portals. Turn it
+            // off for a couple of physics steps so the view cuts cleanly.
+            Body.interpolation = RigidbodyInterpolation.None;
+            interpolationOffSteps = 2;
             PortalTravelled?.Invoke(from, to);
         }
+
+        int interpolationOffSteps;
 
         // ------------------------------------------------------------------ state from outside
 
@@ -500,6 +579,105 @@ namespace GravityPortals
                 $"Gravity: {gravity}   Speed: {Body.linearVelocity.magnitude:0.0}   {(grounded ? "Grounded" : "Airborne")}");
             if (Cursor.lockState != CursorLockMode.Locked)
                 GUI.Label(new Rect(12, 32, 900, 22), "Click to play. WASD move, Shift sprint, Space jump, Mouse fire, R reload, 1/2 or wheel switch weapon, Tab scores, K respawn, Esc release mouse.");
+
+            DrawGravityWarning();
+        }
+
+        // ------------------------------------------------------------------ gravity warning
+
+        [Header("Gravity warning")]
+        [Tooltip("How far in front of a portal the 'gravity is about to change' warning starts (m).")]
+        public float warningDistance = 4f;
+
+        Portal warningPortal;
+        Vector3 warningGravity;
+        float warningStrength;      // 0..1, rises as you get close
+        float warningShown;         // smoothed, for fading in and out
+
+        /// <summary>Finds the portal you're about to pass through, if going through it would
+        /// change your gravity.</summary>
+        void UpdateGravityWarning()
+        {
+            warningPortal = null;
+            warningStrength = 0f;
+            if (!alive) return;
+
+            Vector3 center = Body.position;
+            Vector3 velocity = Body.linearVelocity;
+            float best = float.MaxValue;
+            foreach (var p in Portal.All)
+            {
+                if (p == null || p.linkedPortal == null) continue;
+                Vector3 local = p.transform.InverseTransformPoint(center);
+                if (local.z < -0.3f || local.z > warningDistance) continue;
+                if (Mathf.Abs(local.x) > p.size.x * 0.5f + 0.6f || Mathf.Abs(local.y) > p.size.y * 0.5f + 0.6f) continue;
+                // Close enough to be about to go in, or heading toward it.
+                bool approaching = Vector3.Dot(velocity, p.Normal) < -0.5f;
+                if (!approaching && local.z > 1.6f) continue;
+
+                Vector3 after = Portal.GravityAfterPass(p, p.linkedPortal, gravityDirection);
+                if (Vector3.Angle(after, gravityDirection) < 1f) continue; // no change: nothing to warn about
+                if (local.z < best)
+                {
+                    best = local.z;
+                    warningPortal = p;
+                    warningGravity = after;
+                    warningStrength = 1f - Mathf.Clamp01(local.z / warningDistance);
+                }
+            }
+            warningShown = Mathf.MoveTowards(warningShown, warningPortal != null ? 1f : 0f, Time.deltaTime * 4f);
+        }
+
+        void DrawGravityWarning()
+        {
+            if (warningShown <= 0.01f || warningPortal == null || viewCamera == null) return;
+            var white = Texture2D.whiteTexture;
+            float w = Screen.width, h = Screen.height, cx = w * 0.5f, cy = h * 0.5f;
+            float a = warningShown * Mathf.Lerp(0.45f, 1f, warningStrength);
+            Color c = warningPortal.color;
+
+            // New "down" as seen from your camera.
+            Vector3 d = viewCamera.transform.InverseTransformDirection(warningGravity);
+            Vector2 screenDir = new Vector2(d.x, -d.y); // GUI y points down
+            string where = d.z > 0.7f ? " (ahead)" : d.z < -0.7f ? " (behind you)" : "";
+
+            // Soft glow on the screen edge, strongest on the side the new down points to.
+            float edge = 6f + 18f * warningStrength;
+            GUI.color = new Color(c.r, c.g, c.b, a * 0.25f);
+            GUI.DrawTexture(new Rect(0, 0, w, edge), white);
+            GUI.DrawTexture(new Rect(0, h - edge, w, edge), white);
+            GUI.DrawTexture(new Rect(0, 0, edge, h), white);
+            GUI.DrawTexture(new Rect(w - edge, 0, edge, h), white);
+            if (screenDir.sqrMagnitude > 0.04f)
+            {
+                Vector2 n = screenDir.normalized;
+                GUI.color = new Color(c.r, c.g, c.b, a * 0.35f);
+                if (n.x > 0.5f) GUI.DrawTexture(new Rect(w - edge * 2.5f, 0, edge * 2.5f, h), white);
+                if (n.x < -0.5f) GUI.DrawTexture(new Rect(0, 0, edge * 2.5f, h), white);
+                if (n.y > 0.5f) GUI.DrawTexture(new Rect(0, h - edge * 2.5f, w, edge * 2.5f), white);
+                if (n.y < -0.5f) GUI.DrawTexture(new Rect(0, 0, w, edge * 2.5f), white);
+
+                // Arrow from the crosshair toward the new down.
+                float angle = Mathf.Atan2(n.y, n.x) * Mathf.Rad2Deg;
+                var saved = GUI.matrix;
+                GUIUtility.RotateAroundPivot(angle, new Vector2(cx, cy));
+                GUI.color = new Color(c.r, c.g, c.b, a);
+                GUI.DrawTexture(new Rect(cx + 34, cy - 2, 46, 4), white);           // shaft
+                GUIUtility.RotateAroundPivot(35f, new Vector2(cx + 80, cy));
+                GUI.DrawTexture(new Rect(cx + 66, cy - 2, 16, 4), white);           // head
+                GUI.matrix = saved;
+                GUIUtility.RotateAroundPivot(angle, new Vector2(cx, cy));
+                GUIUtility.RotateAroundPivot(-35f, new Vector2(cx + 80, cy));
+                GUI.DrawTexture(new Rect(cx + 66, cy - 2, 16, 4), white);
+                GUI.matrix = saved;
+            }
+
+            var style = new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold, fontSize = 15 };
+            GUI.color = new Color(0f, 0f, 0f, a * 0.6f);
+            GUI.Label(new Rect(cx - 199, cy + 61, 400, 24), $"GRAVITY SHIFT  >  {DescribeGravity(warningGravity)}{where}", style);
+            GUI.color = new Color(Mathf.Lerp(c.r, 1f, 0.4f), Mathf.Lerp(c.g, 1f, 0.4f), Mathf.Lerp(c.b, 1f, 0.4f), a);
+            GUI.Label(new Rect(cx - 200, cy + 60, 400, 24), $"GRAVITY SHIFT  >  {DescribeGravity(warningGravity)}{where}", style);
+            GUI.color = Color.white;
         }
 
         public static string DescribeGravity(Vector3 g)

@@ -45,6 +45,17 @@ namespace GravityPortals
         public Material visualMaterial;
         [Tooltip("Material (GravityPortals/PortalView) for the surface that shows the other side.")]
         public Material viewMaterial;
+        [Tooltip("Walk-through doorway (quieter whoosh, always full-resolution view).")]
+        public bool doorway;
+        [Tooltip("Old energy look: thick pulsing frame, corner posts and a shimmering surface. Off = a clean opening with a thin colored edge.")]
+        public bool energyEffects;
+
+        /// <summary>Clean look: thin steady edge, no posts, no shimmer.</summary>
+        public bool CleanLook => doorway || !energyEffects;
+
+        [Tooltip("Invisible wall of a wrap-around map: no visuals, no rendered view, no effects. " +
+                 "Falling through these over and over counts as falling into the void.")]
+        public bool worldWrap;
 
         readonly List<Collider> hosts = new List<Collider>();
         readonly List<PortalTraveller> travellers = new List<PortalTraveller>();
@@ -156,7 +167,7 @@ namespace GravityPortals
             foreach (var c in found)
                 if (c.attachedRigidbody == null || c.attachedRigidbody.isKinematic)
                     hosts.Add(c);
-            if (hosts.Count == 0)
+            if (hosts.Count == 0 && !worldWrap) // wrap walls are open air on purpose
                 Debug.LogWarning($"[Portal] '{name}' is not mounted on any surface; travellers can't pass into it.", this);
         }
 
@@ -194,14 +205,25 @@ namespace GravityPortals
         {
             if (!t.SimulatesLocally) return false;
 
-            // Just came out of here: stay solid so it lands on us instead of looping.
+            Vector3 local = transform.InverseTransformPoint(t.Center);
+
+            // Just came out of here. You arrive at exactly the mirrored spot, which can be
+            // partly "inside" this surface, so keep the surface open until you've stepped
+            // fully out. (No push = no snap.) Your fall direction carries through, so you
+            // always move away from the exit and can't loop.
             if (t.ArrivalPortal == this)
             {
-                t.SetPortalIgnore(this, false);
-                return false;
+                float clear = t.ExtentAlong(Normal, t.Body.rotation) + 0.05f;
+                bool inOpening = Mathf.Abs(local.x) <= size.x * 0.5f + 0.5f && Mathf.Abs(local.y) <= size.y * 0.5f + 0.5f;
+                if (inOpening && local.z < clear && local.z > -0.15f)
+                {
+                    t.SetPortalIgnore(this, true);
+                    return false;
+                }
+                // Stepped fully out (or turned around and walked back in): an ordinary portal again.
+                t.ArrivalPortal = null;
             }
 
-            Vector3 local = transform.InverseTransformPoint(t.Center);
             bool overPortal = Mathf.Abs(local.x) <= size.x * 0.5f && Mathf.Abs(local.y) <= size.y * 0.5f;
             // Reach further for fast movers, so a projectile can't hit the wall in the
             // one physics step before the portal opens the surface for it.
@@ -224,13 +246,15 @@ namespace GravityPortals
             return false;
         }
 
-        /// <summary>Keeps an arriving traveller inside the exit opening and fully clear of the surface.</summary>
+        /// <summary>Keeps an arriving traveller inside the exit opening and on its front side.
+        /// It is NOT pushed clear of the surface: you arrive exactly where you'd be if the two
+        /// portals were one opening, and the surface stays open while you step out.</summary>
         public Vector3 ClampExitPosition(Vector3 worldPosition, float extentAlongNormal)
         {
             Vector3 local = transform.InverseTransformPoint(worldPosition);
             local.x = Mathf.Clamp(local.x, -size.x * 0.5f, size.x * 0.5f);
             local.y = Mathf.Clamp(local.y, -size.y * 0.5f, size.y * 0.5f);
-            local.z = Mathf.Max(local.z, extentAlongNormal + 0.05f);
+            local.z = Mathf.Max(local.z, 0.01f);
             return transform.TransformPoint(local);
         }
 
@@ -244,6 +268,12 @@ namespace GravityPortals
 
         internal static void RaiseTeleported(PortalTraveller t, Portal from, Portal to)
         {
+            if (from.worldWrap || to.worldWrap)
+            {
+                // Wrapping round the map should be invisible: no sparks, no sound.
+                Teleported?.Invoke(t, from, to);
+                return;
+            }
             // Your own pass stays visually clean (just the whoosh); others see the sparks.
             bool self = t == GravityPlayerController.Local;
             from.PlayPassFx(from.transform.position, sparks: !self);
@@ -258,7 +288,7 @@ namespace GravityPortals
             lastPassFx = Time.time;
             if (!sparks)
             {
-                Sfx.Play3D(SoundBank.PortalWhoosh, point, 0.6f, UnityEngine.Random.Range(0.9f, 1.1f));
+                Sfx.Play3D(SoundBank.PortalWhoosh, point, doorway ? 0.3f : 0.6f, UnityEngine.Random.Range(0.9f, 1.1f));
                 return;
             }
             Vector3 center = transform.position + Normal * 0.05f;
@@ -277,6 +307,7 @@ namespace GravityPortals
 
         void BuildVisuals()
         {
+            if (worldWrap) return; // invisible: the map's repeating copies show what's beyond
             var mat = visualMaterial != null ? visualMaterial : new Material(Shader.Find("Universal Render Pipeline/Unlit"));
             block = new MaterialPropertyBlock();
             var root = new GameObject("Visuals").transform;
@@ -315,7 +346,8 @@ namespace GravityPortals
                 hum.Play();
             }
 
-            const float t = 0.14f, depth = 0.1f;
+            // Clean look: a thin, flush frame and no posts, so the portal reads as a plain opening.
+            float t = CleanLook ? 0.05f : 0.14f, depth = CleanLook ? 0.04f : 0.1f;
             float hx = size.x * 0.5f, hy = size.y * 0.5f;
             frameRenderers.Add(Part(PrimitiveType.Cube, root, new Vector3(0f, hy, depth * 0.5f), Quaternion.identity, new Vector3(size.x + t, t, depth), mat));
             frameRenderers.Add(Part(PrimitiveType.Cube, root, new Vector3(0f, -hy, depth * 0.5f), Quaternion.identity, new Vector3(size.x + t, t, depth), mat));
@@ -324,6 +356,7 @@ namespace GravityPortals
 
             // Corner posts stick out along the normal: they show which way is "up"
             // for anyone who comes out of this portal.
+            if (CleanLook) return;
             for (int sx = -1; sx <= 1; sx += 2)
                 for (int sy = -1; sy <= 1; sy += 2)
                 {
@@ -360,7 +393,7 @@ namespace GravityPortals
             SetColor(surfaceRenderer, hasView
                 ? color * (0.85f + 0.3f * pulse)                               // tints the view's energy rim
                 : color * (0.18f + 0.22f * pulse + 0.08f * shimmer));          // plain glowing surface
-            Color frame = color * (1.6f + 0.9f * pulse);
+            Color frame = CleanLook ? color * 0.9f : color * (1.6f + 0.9f * pulse); // clean look: a steady, quiet edge
             frame.a = 1f;
             foreach (var r in frameRenderers) SetColor(r, frame);
 

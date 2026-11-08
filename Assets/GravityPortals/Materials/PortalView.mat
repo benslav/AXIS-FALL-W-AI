@@ -29,6 +29,7 @@ Material:
         m_Offset: {x: 0, y: 0}
     m_Ints: []
     m_Floats:
+    - _Clarity: 0
     - _FlipY: 0
     - _HasView: 0
     - _Thick: 0

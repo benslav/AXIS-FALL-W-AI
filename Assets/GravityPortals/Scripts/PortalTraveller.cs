@@ -106,6 +106,9 @@ namespace GravityPortals
             Vector3 newAngular = transfer.MultiplyVector(Body.angularVelocity);
 
             SetPortalIgnore(from, false);
+            // Open the exit surface before arriving: we come out at the exact mirrored spot,
+            // which can overlap the surface the exit portal is on until we've stepped out.
+            SetPortalIgnore(to, true);
 
             Body.position = newPosition;
             Body.rotation = newRotation;
