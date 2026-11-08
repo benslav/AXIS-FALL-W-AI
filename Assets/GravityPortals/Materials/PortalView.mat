@@ -33,6 +33,7 @@ Material:
     - _FlipY: 0
     - _HasView: 0
     - _Thick: 0
+    - _ZTest: 4
     m_Colors:
     - _Color: {r: 0, g: 0.85, b: 1, a: 1}
   m_BuildTextureStacks: []

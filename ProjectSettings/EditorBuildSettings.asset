@@ -6,6 +6,12 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
+    path: Assets/GravityPortals/Scenes/MainMenu.unity
+    guid: 408313e54d90b524b8a8018f387c50ad
+  - enabled: 1
+    path: Assets/GravityPortals/Scenes/PortalTestLab.unity
+    guid: 877be75887a5bda4c834a55feffa9cdc
+  - enabled: 1
     path: Assets/GravityPortals/Scenes/EndlessPavilion.unity
     guid: dbd82c27ff4e38948a6a56aa00354c0d
   - enabled: 1

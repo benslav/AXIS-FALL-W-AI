@@ -127,6 +127,7 @@ namespace GravityPortals
             spawnRotation = transform.rotation;
 
             if (viewCamera == null) viewCamera = Camera.main;
+            mouseSensitivity = PlayerPrefs.GetFloat(MainMenuUI.SensitivityKey, mouseSensitivity); // from Settings
             SetLocalControl(true, viewCamera);
         }
 
@@ -621,6 +622,8 @@ namespace GravityPortals
                 $"Gravity: {gravity}   Speed: {Body.linearVelocity.magnitude:0.0}   {(grounded ? "Grounded" : "Airborne")}");
             if (Cursor.lockState != CursorLockMode.Locked)
                 GUI.Label(new Rect(12, 32, 900, 22), "Click to play. WASD move, Shift sprint, Space jump, Mouse fire, R reload, 1/2 or wheel switch weapon, Tab scores, K respawn, Esc release mouse.");
+            if (TestMap.Active)
+                GUI.Label(new Rect(12, 54, 400, 22), "Test map: H = back to the start");
 
             DrawGravityWarning();
         }

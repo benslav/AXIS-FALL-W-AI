@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using Unity.Netcode;
@@ -61,9 +61,7 @@ namespace GravityPortals
 
             // Version check: joining players send their build version, and the host turns away
             // anyone on a different build with a message saying so.
-            manager.NetworkConfig.ConnectionApproval = true;
-            manager.NetworkConfig.ConnectionData = System.Text.Encoding.UTF8.GetBytes(Application.version);
-            manager.ConnectionApprovalCallback = ApproveConnection;
+            ConnectionApproval.Setup(manager);
             FindMaps();
         }
 
@@ -215,7 +213,7 @@ namespace GravityPortals
             {
                 string path = SceneUtility.GetScenePathByBuildIndex(i);
                 string file = Path.GetFileNameWithoutExtension(path);
-                if (file == "SampleScene") continue; // Unity's template scene, not a map
+                if (file == "SampleScene" || file == MapList.MenuScene) continue; // not maps
                 maps.Add((Pretty(file), path));
             }
         }

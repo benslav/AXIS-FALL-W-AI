@@ -85,7 +85,7 @@ namespace GravityPortals
         // What other players see you holding
         GameObject[] worldGuns;
 
-        public string DisplayName => $"Player {OwnerClientId + 1}";
+        public string DisplayName => LobbyState.NameOf(OwnerClientId);
         public bool IsAlive => alive.Value;
         public int Health => health.Value;
         public int Kills => kills.Value;
@@ -199,6 +199,7 @@ namespace GravityPortals
             }
             if (Input.GetKeyDown(KeyCode.R)) StartReload();
             if (Input.GetKeyDown(KeyCode.K)) SelfDestructRpc();
+            if (Input.GetKeyDown(KeyCode.H) && TestMap.Active) net.RequestReturnRpc(); // test maps: back to start
 
             bool wantsFire = locked && (def.Automatic ? Input.GetButton("Fire1") : Input.GetButtonDown("Fire1"));
             if (wantsFire && Time.time >= nextFireTime && Time.time >= switchEnd && reloadEnd < 0f)
@@ -596,20 +597,20 @@ namespace GravityPortals
         [Rpc(SendTo.ClientsAndHost)]
         void KillFeedRpc(ulong killer, ulong victim, byte weaponIndex, bool headshot, bool fell)
         {
-            string victimName = $"Player {victim + 1}";
+            string victimName = LobbyState.NameOf(victim);
             string text;
             if (fell) text = killer == victim
                 ? $"{victimName} fell into the void"
-                : $"Player {killer + 1} knocked {victimName} into the void";
+                : $"{LobbyState.NameOf(killer)} knocked {victimName} into the void";
             else text = killer == victim
                 ? $"{victimName} self-destructed"
-                : $"Player {killer + 1}  [{WeaponDefs.Get(weaponIndex).Name}{(headshot ? ", headshot" : "")}]  {victimName}";
+                : $"{LobbyState.NameOf(killer)}  [{WeaponDefs.Get(weaponIndex).Name}{(headshot ? ", headshot" : "")}]  {victimName}";
             killFeed.Add((Time.time, text));
             if (killFeed.Count > 6) killFeed.RemoveAt(0);
 
             var local = NetworkManager.Singleton != null ? NetworkManager.Singleton.LocalClientId : ulong.MaxValue;
             var me = Find(local);
-            if (me != null && victim == local) me.killedBy = killer == victim ? "yourself" : $"Player {killer + 1}";
+            if (me != null && victim == local) me.killedBy = killer == victim ? "yourself" : LobbyState.NameOf(killer);
         }
 
         // ================================================================== third-person guns

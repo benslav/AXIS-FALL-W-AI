@@ -395,7 +395,7 @@ public static class GravityArenaBuilder
         go.AddComponent<ArenaNetworkSpawner>().cratePrefab = crate.GetComponent<NetworkObject>();
     }
 
-    static GameObject SavePrefab(GameObject instance, string name)
+    internal static GameObject SavePrefab(GameObject instance, string name)
     {
         string path = $"{PrefabFolder}/{name}.prefab";
         var asset = PrefabUtility.SaveAsPrefabAsset(instance, path);
@@ -626,7 +626,7 @@ public static class GravityArenaBuilder
     {
         var scenes = new List<EditorBuildSettingsScene>(EditorBuildSettings.scenes);
         if (scenes.Exists(s => s.path == path)) return;
-        scenes.Insert(0, new EditorBuildSettingsScene(path, true));
+        scenes.Add(new EditorBuildSettingsScene(path, true)); // the main menu stays first
         EditorBuildSettings.scenes = scenes.ToArray();
     }
 }

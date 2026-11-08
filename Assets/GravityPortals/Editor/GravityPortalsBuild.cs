@@ -22,10 +22,12 @@ public static class GravityPortalsBuild
     const string OutputRoot = "Builds";
     static readonly string[] MapScenes =
     {
+        "Assets/GravityPortals/Scenes/MainMenu.unity", // first: the game starts on the menu
         "Assets/GravityPortals/Scenes/GravityArena.unity",
         "Assets/GravityPortals/Scenes/TriGravityAtrium.unity",
         "Assets/GravityPortals/Scenes/TriGravityAtriumLarge.unity",
         "Assets/GravityPortals/Scenes/EndlessPavilion.unity",
+        "Assets/GravityPortals/Scenes/PortalTestLab.unity",
     };
 
     [MenuItem("Tools/Gravity Portals/Build/Windows (game)")]
