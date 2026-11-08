@@ -81,7 +81,8 @@ namespace GravityPortals
 
         protected override void OnTeleported(Portal from, Portal to, Quaternion newRotation)
         {
-            GravityDirection = -to.Normal;
+            // Same rule as players.
+            GravityDirection = Portal.GravityAfterPass(from, to, GravityDirection);
 
             // Tell clients to jump straight to the exit instead of sliding across the map.
             if (netTransform != null && netObject != null && netObject.IsSpawned && NetMode.IsServer)

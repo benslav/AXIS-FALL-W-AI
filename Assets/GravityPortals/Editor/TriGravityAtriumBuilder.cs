@@ -23,14 +23,14 @@ using UnityEngine.Rendering;
 /// Portals chain the families in a ring (Y -> X -> Z -> Y):
 ///   ground doorway -> the next family's landing
 ///   landing doorway -> the next family's face of the central cube
-///   cube-top floor portal -> the next family's ground
+///   cube-top floor portal and ground floor portal -> drop out of the vault onto the next family's ground
 /// </summary>
 [InitializeOnLoad]
 public static class TriGravityAtriumBuilder
 {
     const string ScenePath = "Assets/GravityPortals/Scenes/TriGravityAtrium.unity";
     const string VersionKey = "ClaudeTest.TriGravityAtrium.Version";
-    const int Version = 1;
+    const int Version = 4; // 2 = upright arrival doors, 3 = vault arrivals, 4 = ground floor portals back
 
     const float Size = 32f;  // interior is the cube [0, 32]^3
     const float Wall = 1f;
@@ -40,12 +40,10 @@ public static class TriGravityAtriumBuilder
 
     static TriGravityAtriumBuilder()
     {
+        // Build on first compile, and rebuild once whenever the layout version goes up.
         if (EditorPrefs.GetInt(VersionKey, 0) >= Version) return;
         EditorPrefs.SetInt(VersionKey, Version);
-        EditorApplication.delayCall += () =>
-        {
-            if (!File.Exists(ScenePath)) Build();
-        };
+        EditorApplication.delayCall += Build;
     }
 
     [MenuItem("Tools/Gravity Portals/Build Tri-Gravity Atrium")]
@@ -75,7 +73,7 @@ public static class TriGravityAtriumBuilder
         // The central cube: one face per family (top for Y, +X face for X, +Z face for Z).
         GravityArenaBuilder.Block("Central Cube", new Vector3(20f, 20f, 20f), new Vector3(6f, 6f, 6f), stone);
 
-        var portals = new Portal[3, 6];
+        var portals = new Portal[3, PortalSlots];
         for (int k = 0; k < 3; k++) FamilyGeometry(k);
         for (int k = 0; k < 3; k++) FamilyPortals(k, portals);
         LinkRing(portals);
@@ -179,6 +177,17 @@ public static class TriGravityAtriumBuilder
         Box($"Landing Door Pillar B {f}", k, new Vector3(2.5f, 12f, 25.8f), new Vector3(0.7f, 4f, 0.7f), stone);
         Box($"Landing Door Lintel {f}", k, new Vector3(2.5f, 14.35f, 24f), new Vector3(0.9f, 0.7f, 4.6f), stone);
 
+        // Arrival doorway on the landing: where the previous family's ground door leads.
+        Box($"Landing Arrival Panel {f}", k, new Vector3(9f, 12f, 28.5f), new Vector3(3f, 4f, 0.5f), stoneDark);
+        Box($"Landing Arrival Pillar A {f}", k, new Vector3(7.3f, 12f, 28.5f), new Vector3(0.7f, 4f, 0.7f), stone);
+        Box($"Landing Arrival Pillar B {f}", k, new Vector3(10.7f, 12f, 28.5f), new Vector3(0.7f, 4f, 0.7f), stone);
+        Box($"Landing Arrival Lintel {f}", k, new Vector3(9f, 14.35f, 28.5f), new Vector3(4.6f, 0.7f, 0.9f), stone);
+
+        // Doorway standing on this family's face of the central cube: where the previous
+        // family's landing door leads.
+        Box($"Cube Door Panel {f}", k, new Vector3(21.2f, 25f, 22.75f), new Vector3(3f, 4f, 0.5f), stoneDark);
+        Box($"Cube Door Lintel {f}", k, new Vector3(21.2f, 27.3f, 22.75f), new Vector3(3.4f, 0.6f, 0.5f), stone);
+
         // Doorway standing on the ground.
         Box($"Ground Door {f}", k, new Vector3(20f, 2f, 4f), new Vector3(6f, 4f, 1f), stoneDark);
         Box($"Ground Door Lintel {f}", k, new Vector3(20f, 4.3f, 4.6f), new Vector3(6.4f, 0.6f, 1.4f), stone);
@@ -233,8 +242,13 @@ public static class TriGravityAtriumBuilder
         GameObjectUtility.SetStaticEditorFlags(ramp, (StaticEditorFlags)~0);
     }
 
-    // Portal slots per family: 0 landing door, 1 cube face arrival, 2 ground door,
-    // 3 landing arrival, 4 cube floor portal, 5 ground arrival.
+    // Portal slots per family (pairs are 0-1, 2-3, 4-5, 6-7):
+    //   0 landing door         -> 1 door on the next family's cube face
+    //   2 ground door          -> 3 door on the next family's landing
+    //   4 cube floor portal    -> 5 vault portal above the next family's ground
+    //   6 ground floor portal  -> 7 second vault portal above the next family's ground
+    const int PortalSlots = 8;
+
     static void FamilyPortals(int k, Portal[,] portals)
     {
         string f = FamilyNames[k];
@@ -246,23 +260,33 @@ public static class TriGravityAtriumBuilder
         portals[k, 2] = MakePortal($"Ground Door {f}", k, new Vector3(20f, 1.85f, 4.51f), Vector3.forward, Vector3.up, door);
         portals[k, 4] = MakePortal($"Cube Floor Portal {f}", k, new Vector3(18.6f, 23f, 20f), Vector3.up, Vector3.forward, small);
 
-        // Arrivals for family k+1, placed on that family's surfaces.
-        portals[k, 1] = MakePortal($"Cube Face Arrival (from {f})", k, new Vector3(23f, 20f, 21.4f), Vector3.right, Vector3.up, small);
-        portals[k, 3] = MakePortal($"Landing Arrival (from {f})", k + 1, new Vector3(9f, 10f, 27f), Vector3.up, Vector3.forward, pad);
-        portals[k, 5] = MakePortal($"Ground Arrival (from {f})", k + 1, new Vector3(26f, 0f, 26f), Vector3.up, Vector3.forward, pad);
+        // Arrivals in family k+1's world. The doors are upright for that family, so walking
+        // through family k's door upright brings you out upright as family k+1 (portals keep
+        // your orientation when you walk through like a door).
+        portals[k, 1] = MakePortal($"Cube Door (from {f})", k + 1, new Vector3(21.2f, 24.9f, 22.49f), Vector3.back, Vector3.up, door);
+        portals[k, 3] = MakePortal($"Landing Arrival Door (from {f})", k + 1, new Vector3(9f, 11.9f, 28.24f), Vector3.back, Vector3.up, door);
+        // Dropping into the cube's floor portal brings you out of the vault above the next
+        // family's ground, facing down onto it: your fall carries through and you land there.
+        // (Placed so you land on open floor, not on that family's own floor portal.)
+        portals[k, 5] = MakePortal($"Vault Arrival (from {f} cube)", k + 1, new Vector3(17f, Size, 10f), Vector3.down, Vector3.forward, pad);
+
+        // Floor portal on the ground: drop in and you fall out of the vault above the next
+        // family's ground, landing on it.
+        portals[k, 6] = MakePortal($"Ground Floor Portal {f}", k, new Vector3(26f, 0f, 26f), Vector3.up, Vector3.forward, pad);
+        portals[k, 7] = MakePortal($"Vault Arrival (from {f} ground)", k + 1, new Vector3(14f, Size, 4f), Vector3.down, Vector3.forward, pad);
     }
 
     static readonly Color[,] PairColors =
     {
-        { new Color(0.0f, 0.85f, 1f), new Color(1f, 0.25f, 0.75f), new Color(1f, 0.85f, 0.15f) },
-        { new Color(0.25f, 0.5f, 1f), new Color(0.75f, 0.3f, 1f), new Color(1f, 0.55f, 0.1f) },
-        { new Color(0.35f, 1f, 0.85f), new Color(1f, 0.4f, 0.4f), new Color(0.6f, 1f, 0.25f) },
+        { new Color(0.0f, 0.85f, 1f), new Color(1f, 0.25f, 0.75f), new Color(1f, 0.85f, 0.15f), new Color(1f, 1f, 1f) },
+        { new Color(0.25f, 0.5f, 1f), new Color(0.75f, 0.3f, 1f), new Color(1f, 0.55f, 0.1f), new Color(0.55f, 0.45f, 1f) },
+        { new Color(0.35f, 1f, 0.85f), new Color(1f, 0.4f, 0.4f), new Color(0.6f, 1f, 0.25f), new Color(1f, 0.7f, 0.85f) },
     };
 
     static void LinkRing(Portal[,] portals)
     {
         for (int k = 0; k < 3; k++)
-            for (int pair = 0; pair < 3; pair++)
+            for (int pair = 0; pair < PortalSlots / 2; pair++)
             {
                 var a = portals[k, pair * 2];
                 var b = portals[k, pair * 2 + 1];

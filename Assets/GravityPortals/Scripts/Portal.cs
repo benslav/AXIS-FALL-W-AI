@@ -72,6 +72,43 @@ namespace GravityPortals
 
         void Start() => FindHosts();
 
+        // ------------------------------------------------------------------ exit gravity
+
+        /// <summary>Gravity within this many degrees of a world axis snaps onto it (degrees).</summary>
+        public const float AlignedTolerance = 30f;
+
+        /// <summary>
+        /// The gravity a traveller has after passing from <paramref name="from"/> to <paramref name="to"/>:
+        /// the direction you were falling carries straight through the portal.
+        ///
+        ///  - Drop into a floor portal: you were falling "into" it, so you keep falling out of
+        ///    the exit, away from it, and land on the surface the exit portal looks at (exactly
+        ///    what you saw through the portal). You come out already upright, so no flip.
+        ///  - Walk through a wall portal like a door: you come out upright relative to the exit
+        ///    doorway (which is how a door can lead into a world with a different "down").
+        ///
+        /// Directions within 30 degrees of an axis snap to it (e.g. the tilted ramp portal), and
+        /// the camera eases the difference. Deterministic, so the server can check it.
+        /// </summary>
+        public static Vector3 GravityAfterPass(Portal from, Portal to, Vector3 gravityBefore)
+        {
+            Vector3 carriedGravity = TransferRotation(from, to) * gravityBefore.normalized;
+            return SnapToAxis(carriedGravity, AlignedTolerance);
+        }
+
+        /// <summary>Removes tiny rounding drift so gravity stays exactly on an axis when it should.</summary>
+        static Vector3 SnapToAxis(Vector3 v, float maxAngle)
+        {
+            Vector3 best = v.normalized;
+            float bestAngle = maxAngle;
+            foreach (var axis in new[] { Vector3.up, Vector3.down, Vector3.left, Vector3.right, Vector3.forward, Vector3.back })
+            {
+                float a = Vector3.Angle(v, axis);
+                if (a <= bestAngle) { bestAngle = a; best = axis; }
+            }
+            return best;
+        }
+
         void OnEnable()
         {
             if (portalId >= 0) registry[portalId] = this;
@@ -207,16 +244,23 @@ namespace GravityPortals
 
         internal static void RaiseTeleported(PortalTraveller t, Portal from, Portal to)
         {
-            from.PlayPassFx(from.transform.position);
-            to.PlayPassFx(t.Center);
+            // Your own pass stays visually clean (just the whoosh); others see the sparks.
+            bool self = t == GravityPlayerController.Local;
+            from.PlayPassFx(from.transform.position, sparks: !self);
+            to.PlayPassFx(t.Center, sparks: !self);
             Teleported?.Invoke(t, from, to);
         }
 
         /// <summary>Burst of energy and a whoosh where something went through.</summary>
-        public void PlayPassFx(Vector3 point)
+        public void PlayPassFx(Vector3 point, bool sparks = true)
         {
             if (Time.time - lastPassFx < 0.08f || Application.isBatchMode) return;
             lastPassFx = Time.time;
+            if (!sparks)
+            {
+                Sfx.Play3D(SoundBank.PortalWhoosh, point, 0.6f, UnityEngine.Random.Range(0.9f, 1.1f));
+                return;
+            }
             Vector3 center = transform.position + Normal * 0.05f;
             for (int i = 0; i < 14; i++)
             {

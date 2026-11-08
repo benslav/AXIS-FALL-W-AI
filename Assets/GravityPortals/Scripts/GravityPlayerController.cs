@@ -41,10 +41,10 @@ namespace GravityPortals
 
         [Header("Gravity")]
         public float gravityStrength = 22f;
-        [Tooltip("How quickly the body turns to a new gravity direction.")]
-        public float alignSharpness = 9f;
-        [Tooltip("Minimum turn speed (degrees/second) so long flips still finish quickly.")]
-        public float minAlignSpeed = 240f;
+        [Tooltip("How quickly the camera eases upright after a portal turns your view (higher = snappier).")]
+        public float cameraEaseRate = 6f;
+        [Tooltip("Slowest the camera eases (degrees/second), so the last few degrees don't drag on.")]
+        public float cameraEaseMinSpeed = 150f;
 
         [Header("Recoil")]
         [Tooltip("How fast the view settles back after recoil.")]
@@ -218,9 +218,12 @@ namespace GravityPortals
             }
         }
 
-        /// <summary>Rotates the body's up toward the gravity "up" with a smooth, fast ease.
-        /// A full 180 (floor to ceiling) rolls around the view direction, so where you
-        /// were looking stays where you are looking.</summary>
+        /// <summary>
+        /// Eases the body's up toward the gravity "up" after a portal changes it.
+        /// The direction you're looking stays fixed in the world the whole time; only the
+        /// horizon rolls around it until you're upright. So the view you had through the
+        /// portal never swings away, it just straightens out.
+        /// </summary>
         void AlignToGravity(float dt)
         {
             Vector3 currentUp = bodyRotation * Vector3.up;
@@ -228,18 +231,35 @@ namespace GravityPortals
             float angle = Vector3.Angle(currentUp, targetUp);
             if (angle < 0.01f) return;
 
-            float step = Mathf.Max(angle * (1f - Mathf.Exp(-alignSharpness * dt)), minAlignSpeed * dt);
+            Vector3 look = bodyRotation * Quaternion.Euler(pitch, 0f, 0f) * Vector3.forward;
+
+            float step = Mathf.Max(angle * (1f - Mathf.Exp(-cameraEaseRate * dt)), cameraEaseMinSpeed * dt);
+            Vector3 newUp;
             if (step >= angle)
             {
-                bodyRotation = Quaternion.FromToRotation(currentUp, targetUp) * bodyRotation;
+                newUp = targetUp;
             }
             else
             {
                 Vector3 axis = Vector3.Cross(currentUp, targetUp);
-                if (axis.sqrMagnitude < 1e-6f) axis = bodyRotation * Vector3.forward;
-                bodyRotation = Quaternion.AngleAxis(step, axis.normalized) * bodyRotation;
+                if (axis.sqrMagnitude < 1e-6f)
+                {
+                    // Exactly upside down: roll around the horizontal part of the view, so the
+                    // up direction never swings through the look direction.
+                    axis = Vector3.ProjectOnPlane(look, currentUp);
+                    if (axis.sqrMagnitude < 1e-6f) axis = bodyRotation * Vector3.forward;
+                }
+                newUp = Quaternion.AngleAxis(step, axis.normalized) * currentUp;
             }
-            bodyRotation = Quaternion.Normalize(bodyRotation);
+
+            // Rebuild yaw and pitch around the new up so the look direction is unchanged.
+            Vector3 flat = Vector3.ProjectOnPlane(look, newUp);
+            Vector3 forward = flat.sqrMagnitude > 1e-6f
+                ? flat.normalized
+                : Vector3.ProjectOnPlane(bodyRotation * Vector3.forward, newUp).normalized;
+            if (forward.sqrMagnitude < 1e-6f) forward = Vector3.ProjectOnPlane(bodyRotation * Vector3.up, newUp).normalized;
+            bodyRotation = Quaternion.LookRotation(forward, newUp);
+            pitch = Mathf.Clamp(-Mathf.Asin(Mathf.Clamp(Vector3.Dot(look, newUp), -1f, 1f)) * Mathf.Rad2Deg, -89f, 89f);
         }
 
         void LateUpdate()
@@ -372,19 +392,18 @@ namespace GravityPortals
 
         protected override void OnTeleported(Portal from, Portal to, Quaternion newRotation)
         {
+            // The view is carried through exactly (what you saw through the portal is what you
+            // see now), then AlignToGravity eases the camera back upright. Seamless: no flash.
             bodyRotation = newRotation;
             Vector3 oldGravity = gravityDirection;
-            gravityDirection = -to.Normal; // gravity now points into the exit portal's surface
+            // Your falling direction carries through the portal.
+            gravityDirection = Portal.GravityAfterPass(from, to, oldGravity);
             if (Vector3.Angle(oldGravity, gravityDirection) > 1f)
                 Sfx.Play2D(SoundBank.GravityShift, 0.4f, UnityEngine.Random.Range(0.95f, 1.05f));
             grounded = false;
             wasGrounded = false;
             lastGroundedTime = -10f; // no coyote jump out of a portal
             noGroundUntil = Time.time + 0.1f;
-
-            fovKick = 14f;
-            flashColor = to.color;
-            flashAlpha = 0.35f;
             PortalTravelled?.Invoke(from, to);
         }
 

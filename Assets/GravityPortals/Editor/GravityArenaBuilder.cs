@@ -24,7 +24,7 @@ public static class GravityArenaBuilder
     const string PrefabFolder = Root + "/Prefabs";
     const string AutoRunKey = "ClaudeTest.GravityArenaBuilder.AutoRan";
     const string NetworkVersionKey = "ClaudeTest.GravityArenaBuilder.NetworkedVersion";
-    const int NetworkedVersion = 3; // 1 = multiplayer, 2 = combat, 3 = polish (portal views)
+    const int NetworkedVersion = 4; // 1 = multiplayer, 2 = combat, 3 = polish (portal views), 4 = portal layout for carry-through gravity
 
     // Arena interior: x and z in [-20, 20], y in [0, 16].
     const float HalfSize = 20f;
@@ -207,35 +207,40 @@ public static class GravityArenaBuilder
 
     static void BuildPortals(Pose rampA, Pose rampB)
     {
+        // Your fall direction carries through a portal, so dropping into one lands you on the
+        // surface the OTHER portal faces. A pair between surfaces A and B therefore takes A's
+        // walkers to the surface opposite B, and B's walkers to the surface opposite A.
+        // These six pairs give every surface (floor, ceiling, four walls) two ways out, and
+        // every flight path across the room is clear of the tower, platforms and catwalk.
         var up = Vector3.up;
         var square = new Vector2(3f, 3f);
         var door = new Vector2(2.5f, 3f);
 
-        // Cyan: floor <-> ceiling. Fall into the floor, come out walking on the ceiling.
-        Link(Make("Cyan A (floor)", new Vector3(0, 0, -6), up, Vector3.forward, square, Cyan),
-             Make("Cyan B (ceiling)", new Vector3(-8, Height, -2), Vector3.down, Vector3.forward, square, Cyan));
+        // Cyan: SW platform top (floor -> south wall) <-> north wall (north wall -> ceiling).
+        Link(Make("Cyan A (platform)", new Vector3(-12, 5, -12), up, Vector3.forward, square, Cyan),
+             Make("Cyan B (north wall)", new Vector3(6, 6, HalfSize), Vector3.back, up, square, Cyan));
 
-        // Magenta: west wall (ground level door) <-> high on the north wall.
-        Link(Make("Magenta A (west wall)", new Vector3(-HalfSize, 1.5f, 4), Vector3.right, up, door, Magenta),
-             Make("Magenta B (north wall)", new Vector3(6, 10, HalfSize), Vector3.back, up, door, Magenta));
+        // Magenta: ceiling (ceiling -> north wall) <-> south wall (south wall -> floor).
+        Link(Make("Magenta A (ceiling)", new Vector3(-8, Height, -2), Vector3.down, Vector3.forward, square, Magenta),
+             Make("Magenta B (south wall)", new Vector3(-6, 8, -HalfSize), Vector3.forward, up, square, Magenta));
 
-        // Green: north wall -> back to the floor.
-        Link(Make("Green A (north wall)", new Vector3(-10, 4, HalfSize), Vector3.back, up, square, Green),
-             Make("Green B (floor)", new Vector3(16, 0, -14), up, Vector3.forward, square, Green));
-
-        // Yellow: angled ramp <-> east face of the tower.
+        // Green: NE ramp (floor -> east wall) <-> west wall (west wall -> ceiling).
         Vector3 rampNormal = rampA.rotation * Vector3.up;
         Vector3 rampUp = rampA.rotation * Vector3.forward;
-        Link(Make("Yellow A (ramp)", rampA.position, rampNormal, rampUp, door, Yellow),
-             Make("Yellow B (tower east face)", new Vector3(3, 4, 0), Vector3.right, up, square, Yellow));
+        Link(Make("Green A (ramp)", rampA.position, rampNormal, rampUp, door, Green),
+             Make("Green B (west wall)", new Vector3(-HalfSize, 8, 4), Vector3.right, up, square, Green));
 
-        // Orange: top of the SW platform <-> east wall.
-        Link(Make("Orange A (platform)", new Vector3(-12, 5, -12), up, Vector3.forward, square, Orange),
-             Make("Orange B (east wall)", new Vector3(HalfSize, 9, -8), Vector3.left, up, square, Orange));
+        // Red: ceiling (ceiling -> west wall) <-> east wall (east wall -> floor).
+        Link(Make("Red A (ceiling)", new Vector3(6, Height, 8), Vector3.down, Vector3.forward, square, Red),
+             Make("Red B (east wall)", new Vector3(HalfSize, 12, -14), Vector3.left, up, square, Red));
 
-        // Red: low on the east wall -> back to the floor.
-        Link(Make("Red A (east wall)", new Vector3(HalfSize, 3, 10), Vector3.left, up, square, Red),
-             Make("Red B (floor)", new Vector3(-4, 0, -17.5f), up, Vector3.forward, square, Red));
+        // Orange: west wall (west wall -> south wall) <-> north wall (north wall -> east wall).
+        Link(Make("Orange A (west wall)", new Vector3(-HalfSize, 8, -15), Vector3.right, up, square, Orange),
+             Make("Orange B (north wall)", new Vector3(-10, 8, HalfSize), Vector3.back, up, square, Orange));
+
+        // Yellow: south wall (south wall -> west wall) <-> east wall (east wall -> north wall).
+        Link(Make("Yellow A (south wall)", new Vector3(10, 8, -HalfSize), Vector3.forward, up, square, Yellow),
+             Make("Yellow B (east wall)", new Vector3(HalfSize, 9, -8), Vector3.left, up, square, Yellow));
     }
 
     static void BuildSpawnPoints()

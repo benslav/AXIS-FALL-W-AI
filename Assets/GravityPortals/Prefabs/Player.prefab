@@ -114,8 +114,8 @@ MonoBehaviour:
   maxSlopeAngle: 50
   maxFallSpeed: 45
   gravityStrength: 22
-  alignSharpness: 9
-  minAlignSpeed: 240
+  cameraEaseRate: 6
+  cameraEaseMinSpeed: 150
   recoilRecovery: 9
   coyoteTime: 0.12
 --- !u!114 &2380597298981049849

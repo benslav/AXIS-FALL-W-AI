@@ -256,7 +256,14 @@ namespace GravityPortals
             var from = Portal.FindById(s.FromPortal);
             var to = Portal.FindById(s.ToPortal);
             if (from == null || to == null || from.linkedPortal != to) return false;
-            if (Vector3.Angle(s.Gravity, -to.Normal) > 1f) return false;
+            // Gravity after the pass must follow the portal rule. With one pass we know the
+            // gravity they went in with, so the expected result is exact. (Several passes in
+            // one tick are rare; the position checks below still apply to those.)
+            if (teleports == 1)
+            {
+                Vector3 expected = Portal.GravityAfterPass(from, to, accepted.Gravity);
+                if (Vector3.Angle(s.Gravity, expected) > 1f) return false;
+            }
             // Must have been at the entrance (skip if several passes landed in one tick)...
             if (teleports == 1 && from.DistanceOutsideZone(accepted.Position) > allowed + 1f) return false;
             // ...and must now be at the exit.
