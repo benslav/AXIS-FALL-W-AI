@@ -17,6 +17,8 @@ namespace GravityPortals
     ///   -ip &lt;address&gt;               address to join (client) — default 127.0.0.1
     ///   -port &lt;number&gt;              UDP port — default 7777
     ///   -map &lt;name&gt;                 map to load first, e.g. "GravityArena" or "atrium"
+    ///   -relay                        with -host: host online through Unity Relay (join code goes to the log)
+    ///   -joincode &lt;code&gt;            join an online (Relay) host by its code
     /// </summary>
     [RequireComponent(typeof(NetworkManager))]
     public class NetworkHud : MonoBehaviour
@@ -24,15 +26,18 @@ namespace GravityPortals
         public string address = "127.0.0.1";
         public string port = "7777";
 
-        enum Mode { None, Server, Host, Client }
+        enum Mode { None, Server, Host, Client, RelayHost, RelayClient }
 
         // Survive the scene load when a map is picked, so the new scene's menu carries on.
         static bool commandLineRead;
         static Mode pendingMode = Mode.None;
-        static string pendingAddress, pendingPort;
+        static string pendingAddress, pendingPort, pendingJoinCode;
 
         NetworkManager manager;
         string status = "";
+        string joinCodeInput = "";
+        string hostedJoinCode;   // shown while hosting online
+        bool busy;               // waiting on Unity's servers
         static readonly List<(string name, string path)> maps = new List<(string, string)>();
 
         void Awake()
@@ -52,6 +57,7 @@ namespace GravityPortals
                 if (!manager.IsServer && id == manager.LocalClientId)
                     status = string.IsNullOrEmpty(manager.DisconnectReason) ? "Disconnected." : manager.DisconnectReason;
             };
+            manager.OnServerStopped += _ => hostedJoinCode = null;
             FindMaps();
         }
 
@@ -73,6 +79,7 @@ namespace GravityPortals
                 pendingMode = Mode.None;
                 if (pendingAddress != null) address = pendingAddress;
                 if (pendingPort != null) port = pendingPort;
+                if (pendingJoinCode != null) joinCodeInput = pendingJoinCode;
                 StartMode(mode);
             }
         }
@@ -83,6 +90,7 @@ namespace GravityPortals
         {
             mode = Application.isBatchMode ? Mode.Server : Mode.None;
             map = null;
+            bool relay = false;
             string[] args = Environment.GetCommandLineArgs();
             for (int i = 0; i < args.Length; i++)
             {
@@ -103,8 +111,15 @@ namespace GravityPortals
                     case "-map":
                         if (next != null) { map = next; i++; }
                         break;
+                    case "-relay":
+                        relay = true;
+                        break;
+                    case "-joincode":
+                        if (next != null) { joinCodeInput = pendingJoinCode = next; mode = Mode.RelayClient; i++; }
+                        break;
                 }
             }
+            if (relay && mode == Mode.Host) mode = Mode.RelayHost;
         }
 
         void StartMode(Mode mode)
@@ -124,7 +139,53 @@ namespace GravityPortals
                 case Mode.Client:
                     Begin(() => manager.StartClient(), listenAll: false);
                     break;
+                case Mode.RelayHost:
+                    HostOnline();
+                    break;
+                case Mode.RelayClient:
+                    JoinOnline(joinCodeInput);
+                    break;
             }
+        }
+
+        // ------------------------------------------------------------------ online (Relay)
+
+        async void HostOnline()
+        {
+            if (busy) return;
+            busy = true;
+            status = "Getting a join code...";
+            try
+            {
+                hostedJoinCode = await RelayConnector.HostAsync(manager);
+                status = "";
+                UnityEngine.Debug.Log($"[GravityPortals] Hosting online. Join code: {hostedJoinCode}");
+            }
+            catch (Exception e)
+            {
+                status = RelayConnector.Explain(e);
+                UnityEngine.Debug.LogWarning($"[GravityPortals] Online hosting failed: {e}");
+            }
+            finally { busy = false; }
+        }
+
+        async void JoinOnline(string code)
+        {
+            if (busy) return;
+            if (string.IsNullOrWhiteSpace(code)) { status = "Type the host's join code first."; return; }
+            busy = true;
+            status = "Joining...";
+            try
+            {
+                await RelayConnector.JoinAsync(manager, code);
+                status = "";
+            }
+            catch (Exception e)
+            {
+                status = RelayConnector.Explain(e);
+                UnityEngine.Debug.LogWarning($"[GravityPortals] Joining online failed: {e}");
+            }
+            finally { busy = false; }
         }
 
         // ------------------------------------------------------------------ maps
@@ -184,11 +245,25 @@ namespace GravityPortals
         {
             if (manager == null) return;
             const float w = 270f;
-            GUILayout.BeginArea(new Rect(Screen.width - w - 10f, 10f, w, 330f), GUI.skin.box);
+            GUILayout.BeginArea(new Rect(Screen.width - w - 10f, 10f, w, 470f), GUI.skin.box);
 
             if (!manager.IsClient && !manager.IsServer)
             {
                 GUILayout.Label("<b>GRAVITY PORTALS</b>  multiplayer", Rich());
+
+                // Online: works across any networks, no router setup.
+                GUI.enabled = !busy;
+                GUILayout.Label("<b>Online</b> (any network)", Rich());
+                if (GUILayout.Button("Host online (get a join code)")) HostOnline();
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("Code", GUILayout.Width(40));
+                joinCodeInput = GUILayout.TextField(joinCodeInput, 12).ToUpperInvariant();
+                if (GUILayout.Button("Join", GUILayout.Width(50))) JoinOnline(joinCodeInput);
+                GUILayout.EndHorizontal();
+
+                // Direct: same network, VPN, or port forwarding.
+                GUILayout.Space(6);
+                GUILayout.Label("<b>Direct</b> (same network / VPN / port forward)", Rich());
                 GUILayout.BeginHorizontal();
                 GUILayout.Label("Address", GUILayout.Width(60));
                 address = GUILayout.TextField(address);
@@ -201,7 +276,8 @@ namespace GravityPortals
                 if (GUILayout.Button("Host (server + play)")) Begin(() => manager.StartHost(), listenAll: true);
                 if (GUILayout.Button("Join")) Begin(() => manager.StartClient(), listenAll: false);
                 if (GUILayout.Button("Dedicated server (no player)")) Begin(() => manager.StartServer(), listenAll: true);
-                if (!string.IsNullOrEmpty(status)) GUILayout.Label(status);
+                GUI.enabled = true;
+                if (!string.IsNullOrEmpty(status)) GUILayout.Label(status, Wrap());
 
                 if (maps.Count > 1)
                 {
@@ -211,7 +287,7 @@ namespace GravityPortals
                     foreach (var m in maps)
                     {
                         bool current = m.path == active;
-                        GUI.enabled = !current;
+                        GUI.enabled = !current && !busy;
                         if (GUILayout.Button(current ? $"> {m.name}" : m.name)) SwitchTo(m.path);
                         GUI.enabled = true;
                     }
@@ -223,6 +299,16 @@ namespace GravityPortals
                 int players = FindObjectsByType<NetworkGravityPlayer>(FindObjectsSortMode.None).Length;
                 GUILayout.Label($"{mode}   players: {players}   map: {Pretty(SceneManager.GetActiveScene().name)}");
                 if (manager.IsClient && !manager.IsServer && !manager.IsConnectedClient) GUILayout.Label("Connecting...");
+
+                if (!string.IsNullOrEmpty(hostedJoinCode))
+                {
+                    GUILayout.Label("Join code (send this to your friends):");
+                    GUILayout.BeginHorizontal();
+                    GUILayout.Label($"<size=22><b>{hostedJoinCode}</b></size>", Rich());
+                    if (GUILayout.Button("Copy", GUILayout.Width(55), GUILayout.Height(28)))
+                        GUIUtility.systemCopyBuffer = hostedJoinCode;
+                    GUILayout.EndHorizontal();
+                }
 
                 if (manager.IsServer)
                     GUILayout.Label($"Rejected updates (all players): {TotalRejections()}");
@@ -248,11 +334,17 @@ namespace GravityPortals
             return total;
         }
 
-        static GUIStyle rich;
+        static GUIStyle rich, wrap;
         static GUIStyle Rich()
         {
             if (rich == null) rich = new GUIStyle(GUI.skin.label) { richText = true };
             return rich;
+        }
+
+        static GUIStyle Wrap()
+        {
+            if (wrap == null) wrap = new GUIStyle(GUI.skin.label) { wordWrap = true };
+            return wrap;
         }
     }
 }
