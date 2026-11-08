@@ -6,6 +6,12 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
+    path: Assets/GravityPortals/Scenes/EndlessPavilion.unity
+    guid: dbd82c27ff4e38948a6a56aa00354c0d
+  - enabled: 1
+    path: Assets/GravityPortals/Scenes/TriGravityAtriumLarge.unity
+    guid: 6a0eb008a31268445bd2c80c0c9361f0
+  - enabled: 1
     path: Assets/GravityPortals/Scenes/TriGravityAtrium.unity
     guid: 570407badbc3a88409daa5d97efc467c
   - enabled: 1

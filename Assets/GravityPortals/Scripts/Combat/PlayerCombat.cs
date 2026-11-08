@@ -453,16 +453,65 @@ namespace GravityPortals
 
             bool killed = health.Value == 0;
             var attacker = Find(attackerClientId);
-            if (attacker != null && attacker != this) attacker.HitConfirmRpc(killed, headshot);
+            if (attacker != null && attacker != this)
+            {
+                attacker.HitConfirmRpc(killed, headshot);
+                lastAttacker = attacker;
+                lastAttackerWeapon = weaponIndex;
+                lastHitTime = Time.time;
+            }
             if (killed) ServerDie(attacker, weaponIndex, headshot);
         }
 
-        void ServerDie(PlayerCombat attacker, int weaponIndex, bool headshot)
+        // Who last hit us, so falling into the void after a knockback credits them.
+        PlayerCombat lastAttacker;
+        int lastAttackerWeapon;
+        float lastHitTime = -100f;
+        const float KnockOffCreditTime = 6f;
+
+        void FixedUpdate()
+        {
+            if (!IsServer || !IsSpawned || !alive.Value) return;
+            var area = ArenaBounds.Current;
+            if (area == null || area.Contains(net.AcceptedState.Position)) return;
+            ServerFellIntoVoid();
+        }
+
+        void ServerFellIntoVoid()
+        {
+            bool pushed = lastAttacker != null && lastAttacker.IsSpawned && Time.time - lastHitTime < KnockOffCreditTime;
+            health.Value = 0;
+            fallWraps.Clear();
+            ServerDie(pushed ? lastAttacker : this, pushed ? lastAttackerWeapon : current, false, fell: true);
+        }
+
+        // Endless fall on wrap-around maps: falling through the floor (or whatever is "down")
+        // again and again means you've fallen into the void.
+        readonly Queue<float> fallWraps = new Queue<float>();
+        const int FallWrapsToDie = 3;
+        const float FallWrapWindow = 10f;
+
+        /// <summary>Server: called for every accepted portal pass.</summary>
+        public void ServerNotePortalPass(Portal from, Vector3 gravity)
+        {
+            if (!IsServer || !alive.Value || from == null || !from.worldWrap) return;
+            // Only passes straight down through the surface below you count, not walking
+            // sideways through a wall.
+            if (Vector3.Angle(from.Normal, -gravity) > 30f) return;
+
+            float now = Time.time;
+            fallWraps.Enqueue(now);
+            while (fallWraps.Count > 0 && fallWraps.Peek() < now - FallWrapWindow) fallWraps.Dequeue();
+            if (fallWraps.Count >= FallWrapsToDie) ServerFellIntoVoid();
+        }
+
+        void ServerDie(PlayerCombat attacker, int weaponIndex, bool headshot, bool fell = false)
         {
             alive.Value = false;
             deaths.Value++;
             if (attacker != null && attacker != this) attacker.kills.Value++;
-            KillFeedRpc(attacker != null ? attacker.OwnerClientId : OwnerClientId, OwnerClientId, (byte)weaponIndex, headshot);
+            KillFeedRpc(attacker != null ? attacker.OwnerClientId : OwnerClientId, OwnerClientId, (byte)weaponIndex, headshot, fell);
+            lastAttacker = null;
             StartCoroutine(RespawnAfterDelay());
         }
 
@@ -545,10 +594,14 @@ namespace GravityPortals
         }
 
         [Rpc(SendTo.ClientsAndHost)]
-        void KillFeedRpc(ulong killer, ulong victim, byte weaponIndex, bool headshot)
+        void KillFeedRpc(ulong killer, ulong victim, byte weaponIndex, bool headshot, bool fell)
         {
             string victimName = $"Player {victim + 1}";
-            string text = killer == victim
+            string text;
+            if (fell) text = killer == victim
+                ? $"{victimName} fell into the void"
+                : $"Player {killer + 1} knocked {victimName} into the void";
+            else text = killer == victim
                 ? $"{victimName} self-destructed"
                 : $"Player {killer + 1}  [{WeaponDefs.Get(weaponIndex).Name}{(headshot ? ", headshot" : "")}]  {victimName}";
             killFeed.Add((Time.time, text));

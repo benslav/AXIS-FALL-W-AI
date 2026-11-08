@@ -126,6 +126,9 @@ public static class GravityArenaBuilder
         Debug.Log($"[GravityPortals] Built and opened '{scenePath}'. Press Play, then Host (or Join) in the top-right menu.");
     }
 
+    /// <summary>Set by a layout to override the camera's background (e.g. to match fog).</summary>
+    internal static Color? CameraBackground;
+
     internal static Transform GeometryRoot => geometryRoot;
     internal static Transform LightRoot => lightRoot;
 
@@ -365,7 +368,8 @@ public static class GravityArenaBuilder
         cam.farClipPlane = 300f;
         cam.fieldOfView = 80f;
         cam.clearFlags = CameraClearFlags.SolidColor;
-        cam.backgroundColor = new Color(0.02f, 0.025f, 0.04f);
+        cam.backgroundColor = CameraBackground ?? new Color(0.02f, 0.025f, 0.04f);
+        CameraBackground = null;
         camGo.AddComponent<AudioListener>();
     }
 

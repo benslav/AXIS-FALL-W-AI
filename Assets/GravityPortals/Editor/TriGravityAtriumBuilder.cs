@@ -29,26 +29,55 @@ using UnityEngine.Rendering;
 public static class TriGravityAtriumBuilder
 {
     const string ScenePath = "Assets/GravityPortals/Scenes/TriGravityAtrium.unity";
+    const string LargeScenePath = "Assets/GravityPortals/Scenes/TriGravityAtriumLarge.unity";
     const string VersionKey = "ClaudeTest.TriGravityAtrium.Version";
-    const int Version = 4; // 2 = upright arrival doors, 3 = vault arrivals, 4 = ground floor portals back
+    const string LargeVersionKey = "ClaudeTest.TriGravityAtriumLarge.Version";
+    const int Version = 5; // 2 upright doors, 3 vault arrivals, 4 ground floor portals, 5 stair steps
+    const int LargeVersion = 1;
 
-    const float Size = 32f;  // interior is the cube [0, 32]^3
     const float Wall = 1f;
+
+    // Current build's dimensions (set by Build / BuildLarge). The hall is the cube [0, Size]^3;
+    // the central cube sits on the hall's diagonal at (CubeCenter, CubeCenter, CubeCenter).
+    static float Size = 32f;
+    static float CubeCenter = 20f;
+    static float CubeHalf = 3f;
 
     static Material stone, stoneDark, ink, lamp;
     static Material[] grounds, skies;
 
     static TriGravityAtriumBuilder()
     {
-        // Build on first compile, and rebuild once whenever the layout version goes up.
-        if (EditorPrefs.GetInt(VersionKey, 0) >= Version) return;
+        // Build on first compile, and rebuild once whenever a layout version goes up.
+        bool small = EditorPrefs.GetInt(VersionKey, 0) < Version;
+        bool large = EditorPrefs.GetInt(LargeVersionKey, 0) < LargeVersion;
+        if (!small && !large) return;
         EditorPrefs.SetInt(VersionKey, Version);
-        EditorApplication.delayCall += Build;
+        EditorPrefs.SetInt(LargeVersionKey, LargeVersion);
+        EditorApplication.delayCall += () =>
+        {
+            if (small) Build();
+            if (large) BuildLarge();
+        };
     }
 
     [MenuItem("Tools/Gravity Portals/Build Tri-Gravity Atrium")]
-    public static void Build() =>
+    public static void Build()
+    {
+        Size = 32f; CubeCenter = 20f; CubeHalf = 3f;
         GravityArenaBuilder.BuildScene(ScenePath, Layout, new Vector3(30f, 14f, 30f), new Vector3(10f, 10f, 10f));
+    }
+
+    /// <summary>Bigger hall (44 m) with the central cube in the exact middle of it.</summary>
+    [MenuItem("Tools/Gravity Portals/Build Tri-Gravity Atrium (Large)")]
+    public static void BuildLarge()
+    {
+        Size = 44f; CubeCenter = 22f; CubeHalf = 4f;
+        GravityArenaBuilder.BuildScene(LargeScenePath, Layout, new Vector3(40f, 20f, 40f), new Vector3(16f, 12f, 16f));
+    }
+
+    /// <summary>A point relative to the central cube, in family Y's frame (y = up from its top face).</summary>
+    static Vector3 Cube(float x, float y, float z) => new Vector3(CubeCenter + x, CubeCenter + y, CubeCenter + z);
 
     // ------------------------------------------------------------------ symmetry
 
@@ -71,7 +100,7 @@ public static class TriGravityAtriumBuilder
         Shell();
 
         // The central cube: one face per family (top for Y, +X face for X, +Z face for Z).
-        GravityArenaBuilder.Block("Central Cube", new Vector3(20f, 20f, 20f), new Vector3(6f, 6f, 6f), stone);
+        GravityArenaBuilder.Block("Central Cube", Cube(0f, 0f, 0f), Vector3.one * CubeHalf * 2f, stone);
 
         var portals = new Portal[3, PortalSlots];
         for (int k = 0; k < 3; k++) FamilyGeometry(k);
@@ -119,6 +148,7 @@ public static class TriGravityAtriumBuilder
 
         // Lamps: one in the middle, two per family (copied by the symmetry).
         AddLamp("Lamp Center", new Vector3(11f, 11f, 11f), 30f, 3.5f);
+        if (Size > 36f) AddLamp("Lamp Far", Vector3.one * (Size - 9f), 32f, 3.5f); // light the extra space in the large hall
         for (int k = 0; k < 3; k++)
         {
             AddLamp($"Lamp {k}a", P(new Vector3(16f, 7f, 6f), k), 20f, 3f);
@@ -185,8 +215,8 @@ public static class TriGravityAtriumBuilder
 
         // Doorway standing on this family's face of the central cube: where the previous
         // family's landing door leads.
-        Box($"Cube Door Panel {f}", k, new Vector3(21.2f, 25f, 22.75f), new Vector3(3f, 4f, 0.5f), stoneDark);
-        Box($"Cube Door Lintel {f}", k, new Vector3(21.2f, 27.3f, 22.75f), new Vector3(3.4f, 0.6f, 0.5f), stone);
+        Box($"Cube Door Panel {f}", k, Cube(0.4f * CubeHalf, CubeHalf + 2f, CubeHalf - 0.25f), new Vector3(3f, 4f, 0.5f), stoneDark);
+        Box($"Cube Door Lintel {f}", k, Cube(0.4f * CubeHalf, CubeHalf + 4.3f, CubeHalf - 0.25f), new Vector3(3.4f, 0.6f, 0.5f), stone);
 
         // Doorway standing on the ground.
         Box($"Ground Door {f}", k, new Vector3(20f, 2f, 4f), new Vector3(6f, 4f, 1f), stoneDark);
@@ -206,7 +236,7 @@ public static class TriGravityAtriumBuilder
     static void Staircase(string name, int k, float bottomX, float topX, float z, float width)
     {
         float run = bottomX - topX;
-        const float step = 0.5f;
+        const float step = 0.25f; // close to real stair proportions
         int count = Mathf.RoundToInt(run / step);
 
         var root = new GameObject(name).transform;
@@ -240,6 +270,11 @@ public static class TriGravityAtriumBuilder
         Object.DestroyImmediate(ramp.GetComponent<MeshRenderer>());
         Object.DestroyImmediate(ramp.GetComponent<MeshFilter>());
         GameObjectUtility.SetStaticEditorFlags(ramp, (StaticEditorFlags)~0);
+
+        // Tell the player camera where the treads are, so walking it feels like steps.
+        var steps = ramp.AddComponent<StairSteps>();
+        steps.origin = P(new Vector3(bottomX, 0f, z), k);
+        steps.stepSize = step;
     }
 
     // Portal slots per family (pairs are 0-1, 2-3, 4-5, 6-7):
@@ -258,12 +293,12 @@ public static class TriGravityAtriumBuilder
 
         portals[k, 0] = MakePortal($"Landing Door {f}", k, new Vector3(2.76f, 11.9f, 24f), Vector3.right, Vector3.up, door);
         portals[k, 2] = MakePortal($"Ground Door {f}", k, new Vector3(20f, 1.85f, 4.51f), Vector3.forward, Vector3.up, door);
-        portals[k, 4] = MakePortal($"Cube Floor Portal {f}", k, new Vector3(18.6f, 23f, 20f), Vector3.up, Vector3.forward, small);
+        portals[k, 4] = MakePortal($"Cube Floor Portal {f}", k, Cube(-0.47f * CubeHalf, CubeHalf, 0f), Vector3.up, Vector3.forward, small);
 
         // Arrivals in family k+1's world. The doors are upright for that family, so walking
         // through family k's door upright brings you out upright as family k+1 (portals keep
         // your orientation when you walk through like a door).
-        portals[k, 1] = MakePortal($"Cube Door (from {f})", k + 1, new Vector3(21.2f, 24.9f, 22.49f), Vector3.back, Vector3.up, door);
+        portals[k, 1] = MakePortal($"Cube Door (from {f})", k + 1, Cube(0.4f * CubeHalf, CubeHalf + 1.9f, CubeHalf - 0.51f), Vector3.back, Vector3.up, door);
         portals[k, 3] = MakePortal($"Landing Arrival Door (from {f})", k + 1, new Vector3(9f, 11.9f, 28.24f), Vector3.back, Vector3.up, door);
         // Dropping into the cube's floor portal brings you out of the vault above the next
         // family's ground, facing down onto it: your fall carries through and you land there.
@@ -274,6 +309,9 @@ public static class TriGravityAtriumBuilder
         // family's ground, landing on it.
         portals[k, 6] = MakePortal($"Ground Floor Portal {f}", k, new Vector3(26f, 0f, 26f), Vector3.up, Vector3.forward, pad);
         portals[k, 7] = MakePortal($"Vault Arrival (from {f} ground)", k + 1, new Vector3(14f, Size, 4f), Vector3.down, Vector3.forward, pad);
+
+        // The four door portals are walk-through doorways: clean openings, no frame posts.
+        for (int slot = 0; slot < 4; slot++) portals[k, slot].doorway = true;
     }
 
     static readonly Color[,] PairColors =

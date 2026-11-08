@@ -226,6 +226,8 @@ namespace GravityPortals
             float dt = (float)(now - acceptedTime);
             if (Validate(s, dt))
             {
+                if (s.TeleportCount != accepted.TeleportCount && TryGetComponent(out PlayerCombat combat))
+                    combat.ServerNotePortalPass(Portal.FindById(s.FromPortal), s.Gravity);
                 accepted = s;
                 acceptedTime = now;
                 state.Value = s;

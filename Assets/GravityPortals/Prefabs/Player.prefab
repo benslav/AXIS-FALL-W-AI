@@ -118,6 +118,7 @@ MonoBehaviour:
   cameraEaseMinSpeed: 150
   recoilRecovery: 9
   coyoteTime: 0.12
+  warningDistance: 4
 --- !u!114 &2380597298981049849
 MonoBehaviour:
   m_ObjectHideFlags: 0
