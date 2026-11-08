@@ -24,6 +24,8 @@ public static class GravityPortalsBuild
     {
         "Assets/GravityPortals/Scenes/GravityArena.unity",
         "Assets/GravityPortals/Scenes/TriGravityAtrium.unity",
+        "Assets/GravityPortals/Scenes/TriGravityAtriumLarge.unity",
+        "Assets/GravityPortals/Scenes/EndlessPavilion.unity",
     };
 
     [MenuItem("Tools/Gravity Portals/Build/Windows (game)")]
@@ -48,6 +50,188 @@ public static class GravityPortalsBuild
         if (Application.isBatchMode) EditorApplication.Exit(ok ? 0 : 1);
         else if (ok) EditorUtility.RevealInFinder(OutputRoot);
     }
+
+    // ------------------------------------------------------------------ one-click release
+
+    const string PublishFolderKey = "ClaudeTest.GravityPortals.PublishFolder";
+    static readonly string ReleaseFolder = Path.Combine(OutputRoot, "Release");
+
+    /// <summary>Where finished zips are copied, so a shared link to that folder always has the
+    /// latest build. Defaults to "AXIS-FALL Builds" in Google Drive for desktop (found on
+    /// whichever drive letter it uses), then OneDrive, then Builds/Publish.
+    /// Override with Tools > Gravity Portals > Build > Choose Publish Folder.</summary>
+    static string PublishFolder
+    {
+        get
+        {
+            string saved = EditorPrefs.GetString(PublishFolderKey, "");
+            if (!string.IsNullOrEmpty(saved)) return saved;
+            string cloud = GoogleDriveFolder() ?? Environment.GetEnvironmentVariable("OneDrive");
+            return string.IsNullOrEmpty(cloud)
+                ? Path.GetFullPath(Path.Combine(OutputRoot, "Publish"))
+                : Path.Combine(cloud, $"{GameName} Builds");
+        }
+        set => EditorPrefs.SetString(PublishFolderKey, value);
+    }
+
+    /// <summary>Google Drive for desktop's "My Drive" folder, or null if it isn't installed.</summary>
+    static string GoogleDriveFolder()
+    {
+        // Streaming mode: a virtual drive (usually G:) with "My Drive" at its root.
+        foreach (var drive in DriveInfo.GetDrives())
+        {
+            try
+            {
+                if (!drive.IsReady) continue;
+                string myDrive = Path.Combine(drive.RootDirectory.FullName, "My Drive");
+                if (Directory.Exists(myDrive)) return myDrive;
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+        // Mirror mode: a normal folder in your user profile.
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        foreach (var candidate in new[] { "My Drive", Path.Combine("Google Drive", "My Drive"), "Google Drive" })
+        {
+            string path = Path.Combine(home, candidate);
+            if (Directory.Exists(path)) return path;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Bumps the version, builds Windows and Linux, zips each, and copies the zips plus a
+    /// RELEASE.txt to the publish folder (same file names every time, so shared links stay
+    /// valid). Players on an older build are told to update when they try to join.
+    /// </summary>
+    [MenuItem("Tools/Gravity Portals/Release (build Windows + Linux, zip, publish)", priority = 0)]
+    public static void Release()
+    {
+        string previous = PlayerSettings.bundleVersion;
+        string version = NextVersion(previous);
+        PlayerSettings.bundleVersion = version;
+        AssetDatabase.SaveAssets();
+        Debug.Log($"[Release] v{previous} -> v{version}");
+
+        bool ok = false;
+        try
+        {
+            ok = BuildAndZip(BuildTarget.StandaloneWindows64, "Windows", $"{GameName}.exe", version)
+              && BuildAndZip(BuildTarget.StandaloneLinux64, "Linux", $"{GameName}.x86_64", version)
+              && Publish(version);
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[Release] Failed: {e}");
+        }
+
+        if (!ok)
+        {
+            // Don't burn a version number on a release that didn't happen.
+            PlayerSettings.bundleVersion = previous;
+            AssetDatabase.SaveAssets();
+            Debug.LogError($"[Release] Release failed; version kept at v{previous}. See the errors above.");
+        }
+        if (Application.isBatchMode) EditorApplication.Exit(ok ? 0 : 1);
+    }
+
+    [MenuItem("Tools/Gravity Portals/Build/Choose Publish Folder...")]
+    static void ChoosePublishFolder()
+    {
+        string chosen = EditorUtility.OpenFolderPanel("Folder to publish release zips to (e.g. a shared OneDrive or Google Drive folder)", PublishFolder, "");
+        if (string.IsNullOrEmpty(chosen)) return;
+        PublishFolder = chosen;
+        Debug.Log($"[Release] Publish folder: {chosen}");
+    }
+
+    [MenuItem("Tools/Gravity Portals/Build/Open Publish Folder")]
+    static void OpenPublishFolder()
+    {
+        Directory.CreateDirectory(PublishFolder);
+        EditorUtility.RevealInFinder(PublishFolder);
+    }
+
+    static string NextVersion(string current)
+    {
+        // 0.1.7 -> 0.1.8; anything unparsable restarts at 0.1.1.
+        var parts = (current ?? "").Split('.');
+        if (parts.Length == 3 && int.TryParse(parts[2], out int patch))
+            return $"{parts[0]}.{parts[1]}.{patch + 1}";
+        return "0.1.1";
+    }
+
+    static bool BuildAndZip(BuildTarget target, string folder, string executable, string version)
+    {
+        string dir = Path.Combine(OutputRoot, folder);
+        if (Directory.Exists(dir)) Directory.Delete(dir, true); // no stale files from older builds
+        if (!Run(target, false, folder, executable, out _)) return false;
+
+        Directory.CreateDirectory(ReleaseFolder);
+        string zip = Path.Combine(ReleaseFolder, $"{GameName}-{folder}.zip");
+        if (File.Exists(zip)) File.Delete(zip);
+        using (var archive = System.IO.Compression.ZipFile.Open(zip, System.IO.Compression.ZipArchiveMode.Create))
+        {
+            string root = Path.GetFullPath(dir);
+            foreach (string file in Directory.GetFiles(root, "*", SearchOption.AllDirectories))
+            {
+                string relative = file.Substring(root.Length + 1).Replace('\\', '/');
+                // Unity's debug-symbol folders are explicitly not meant to ship.
+                if (relative.Contains("DoNotShip") || relative.Contains("DontShip")) continue;
+                System.IO.Compression.ZipFileExtensions.CreateEntryFromFile(archive, file, $"{GameName}/{relative}");
+            }
+            var info = archive.CreateEntry($"{GameName}/VERSION.txt");
+            using (var w = new StreamWriter(info.Open())) w.Write($"{GameName} v{version}\n");
+        }
+        Debug.Log($"[Release] Zipped {folder}: {new FileInfo(zip).Length / (1024 * 1024)} MB");
+        return true;
+    }
+
+    static bool Publish(string version)
+    {
+        string target = PublishFolder;
+        Directory.CreateDirectory(target);
+        foreach (string zip in Directory.GetFiles(ReleaseFolder, "*.zip"))
+            File.Copy(zip, Path.Combine(target, Path.GetFileName(zip)), true);
+
+        string notes =
+            $"{GameName} v{version}  ({DateTime.Now:yyyy-MM-dd HH:mm})\n\n" +
+            "Windows: unzip, then run AXIS-FALL/AXIS-FALL.exe\n" +
+            "Linux:   unzip, then run:  sh AXIS-FALL/run.sh\n\n" +
+            "Everyone in a match needs the same version; the game tells you if yours is out of date.\n\n" +
+            "Recent changes:\n" + RecentChanges() + "\n";
+        File.WriteAllText(Path.Combine(target, "RELEASE.txt"), notes);
+
+        Debug.Log($"[Release] v{version} published to {target}");
+        if (!Application.isBatchMode) EditorUtility.RevealInFinder(Path.Combine(target, "RELEASE.txt"));
+        return true;
+    }
+
+    /// <summary>The last few commit subjects, if this project is a git repository.</summary>
+    static string RecentChanges()
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("git", "log -8 --pretty=format:\"- %s\"")
+            {
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetFullPath("."),
+            };
+            using (var p = System.Diagnostics.Process.Start(psi))
+            {
+                string output = p.StandardOutput.ReadToEnd();
+                p.WaitForExit(5000);
+                return string.IsNullOrWhiteSpace(output) ? "- (no history)" : output;
+            }
+        }
+        catch
+        {
+            return "- (git not available)";
+        }
+    }
+
+    // ------------------------------------------------------------------ single builds
 
     static void Build(BuildTarget target, bool server, string folder, string executable)
     {

@@ -58,6 +58,12 @@ namespace GravityPortals
                     status = string.IsNullOrEmpty(manager.DisconnectReason) ? "Disconnected." : manager.DisconnectReason;
             };
             manager.OnServerStopped += _ => hostedJoinCode = null;
+
+            // Version check: joining players send their build version, and the host turns away
+            // anyone on a different build with a message saying so.
+            manager.NetworkConfig.ConnectionApproval = true;
+            manager.NetworkConfig.ConnectionData = System.Text.Encoding.UTF8.GetBytes(Application.version);
+            manager.ConnectionApprovalCallback = ApproveConnection;
             FindMaps();
         }
 
@@ -146,6 +152,18 @@ namespace GravityPortals
                     JoinOnline(joinCodeInput);
                     break;
             }
+        }
+
+        void ApproveConnection(NetworkManager.ConnectionApprovalRequest request, NetworkManager.ConnectionApprovalResponse response)
+        {
+            string theirs = request.Payload != null && request.Payload.Length > 0
+                ? System.Text.Encoding.UTF8.GetString(request.Payload)
+                : "unknown";
+            bool sameBuild = theirs == Application.version;
+            response.Approved = sameBuild;
+            response.CreatePlayerObject = sameBuild;
+            response.Reason = sameBuild ? null :
+                $"Version mismatch: the host is on v{Application.version}, you're on v{theirs}. Download the latest build.";
         }
 
         // ------------------------------------------------------------------ online (Relay)
@@ -249,7 +267,7 @@ namespace GravityPortals
 
             if (!manager.IsClient && !manager.IsServer)
             {
-                GUILayout.Label("<b>GRAVITY PORTALS</b>  multiplayer", Rich());
+                GUILayout.Label($"<b>GRAVITY PORTALS</b>  multiplayer   v{Application.version}", Rich());
 
                 // Online: works across any networks, no router setup.
                 GUI.enabled = !busy;
