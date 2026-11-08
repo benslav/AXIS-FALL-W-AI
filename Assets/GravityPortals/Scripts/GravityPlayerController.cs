@@ -135,7 +135,10 @@ namespace GravityPortals
         {
             IsLocallyControlled = local;
             Body.isKinematic = !local;
-            Body.interpolation = RigidbodyInterpolation.Interpolate;
+            // The local player smooths its own camera (see RenderPosition) so the smoothing can
+            // carry through portals; Unity's built-in smoothing can't, and would blip.
+            Body.interpolation = local ? RigidbodyInterpolation.None : RigidbodyInterpolation.Interpolate;
+            simPrevious = simCurrent = Body.position;
             Body.collisionDetectionMode = local
                 ? CollisionDetectionMode.ContinuousDynamic
                 : CollisionDetectionMode.ContinuousSpeculative;
@@ -267,16 +270,33 @@ namespace GravityPortals
             pitch = Mathf.Clamp(-Mathf.Asin(Mathf.Clamp(Vector3.Dot(look, newUp), -1f, 1f)) * Mathf.Rad2Deg, -89f, 89f);
         }
 
+        // Camera smoothing: the physics position at the start of the latest physics step and
+        // the one after it, blended by how far we are into that step. On a portal pass both are
+        // carried through the portal, so the blend continues seamlessly on the other side.
+        Vector3 simPrevious, simCurrent;
+
+        /// <summary>Where the player is drawn this frame (smoothed between physics steps).</summary>
+        public Vector3 RenderPosition
+        {
+            get
+            {
+                if (!IsLocallyControlled || Body.isKinematic) return transform.position;
+                float t = Mathf.Clamp01((Time.time - Time.fixedTime) / Time.fixedDeltaTime);
+                return Vector3.Lerp(simPrevious, simCurrent, t);
+            }
+        }
+
         void LateUpdate()
         {
             if (headPivot != null) headPivot.localRotation = Quaternion.Euler(pitch, 0f, 0f);
             if (!IsLocallyControlled || viewCamera == null) return;
 
+            simCurrent = Body.position; // result of the latest physics step
             Vector3 up = bodyRotation * Vector3.up;
             // On stairs the camera rides on the tread under you: it lags the smooth ramp, then
             // catches up quickly at each step edge, so climbing feels like steps.
             stairOffset = Mathf.Lerp(stairOffset, stairTarget, 1f - Mathf.Exp(-22f * Time.deltaTime));
-            viewCamera.transform.SetPositionAndRotation(transform.position + up * (eyeHeight - landDip + stairOffset), AimRotation);
+            viewCamera.transform.SetPositionAndRotation(RenderPosition + up * (eyeHeight - landDip + stairOffset), AimRotation);
             viewCamera.fieldOfView = baseFov + fovKick;
         }
 
@@ -286,9 +306,7 @@ namespace GravityPortals
         {
             if (!IsLocallyControlled || Body.isKinematic) return;
 
-            if (interpolationOffSteps > 0 && --interpolationOffSteps == 0)
-                Body.interpolation = RigidbodyInterpolation.Interpolate;
-
+            simPrevious = Body.position; // where this physics step starts (for camera smoothing)
             float dt = Time.fixedDeltaTime;
             Body.rotation = bodyRotation;
 
@@ -409,19 +427,17 @@ namespace GravityPortals
             // against gravity: walking up a 45-degree staircase moves you upward fast, but
             // you're still on it.
             Vector3 previousNormal = wasGrounded ? groundNormal : gravityUp;
+            Collider previousCollider = groundCollider;
             grounded = false;
             groundCollider = null;
             groundNormal = gravityUp;
             if (Time.time < noGroundUntil) return;
             if (Vector3.Dot(Body.linearVelocity, previousNormal) > 2f) return;
 
-            float radius = capsule.radius * 0.95f;
+            float radius = capsule.radius * 0.9f;
             float halfSegment = Mathf.Max(0f, capsule.height * 0.5f - capsule.radius);
-            // Reach a bit further while already grounded, so going down stairs or over a step
-            // edge keeps you on the ground instead of briefly going airborne (and sliding).
-            float reach = halfSegment + (wasGrounded ? 0.45f : 0.12f);
             int count = Physics.SphereCastNonAlloc(Body.position, radius, -bodyUp, hits,
-                reach, ~0, QueryTriggerInteraction.Ignore);
+                halfSegment + 0.45f, ~0, QueryTriggerInteraction.Ignore);
 
             float best = float.MaxValue;
             for (int i = 0; i < count; i++)
@@ -429,16 +445,43 @@ namespace GravityPortals
                 var h = hits[i];
                 if (h.distance <= 0f && h.point == Vector3.zero) continue; // started overlapping
                 if (IsOwnCollider(h.collider) || IsHostIgnored(h.collider)) continue; // passing through it
-                if (Vector3.Angle(h.normal, gravityUp) > maxSlopeAngle) continue;
+                // Already on the ground: reach further, so going down stairs or over a step edge
+                // keeps you planted. In the air: only count ground right below you (landing).
+                if (!wasGrounded && h.distance > halfSegment + 0.12f) continue;
+
+                Vector3 normal = h.normal;
+                if (Vector3.Angle(normal, gravityUp) > maxSlopeAngle)
+                {
+                    // Near edges and corners a sweep reports a blended edge normal (e.g. the side
+                    // of the hidden stair ramp). Ask the surface itself what's under that point.
+                    if (!h.collider.Raycast(new Ray(h.point + gravityUp * 0.3f, -gravityUp), out RaycastHit surface, 0.6f))
+                        continue;
+                    normal = surface.normal;
+                    if (Vector3.Angle(normal, gravityUp) > maxSlopeAngle) continue;
+                }
                 if (h.distance < best)
                 {
                     best = h.distance;
-                    groundNormal = h.normal;
+                    groundNormal = normal;
                     groundCollider = h.collider;
                     grounded = true;
                 }
             }
+
+            if (grounded)
+            {
+                lastRealGroundTime = Time.time;
+            }
+            else if (wasGrounded && Time.time - lastRealGroundTime < 0.1f)
+            {
+                // A single missed probe at a seam or edge doesn't make you airborne.
+                grounded = true;
+                groundNormal = previousNormal;
+                groundCollider = previousCollider;
+            }
         }
+
+        float lastRealGroundTime = -10f;
 
         // ------------------------------------------------------------------ portals
 
@@ -476,15 +519,13 @@ namespace GravityPortals
                 noGroundUntil = Time.time + 0.1f;
             }
 
-            // Physics smoothing would blend between where you were and where you are now,
-            // drawing a frame or two of the camera halfway between the two portals. Turn it
-            // off for a couple of physics steps so the view cuts cleanly.
-            Body.interpolation = RigidbodyInterpolation.None;
-            interpolationOffSteps = 2;
+            // Carry the camera smoothing through the portal too, so the camera keeps gliding
+            // along exactly as if the two portals were one opening (no jump, no in-between frame).
+            Matrix4x4 transfer = Portal.TransferMatrix(from, to);
+            simPrevious = transfer.MultiplyPoint3x4(simPrevious);
+            simCurrent = transfer.MultiplyPoint3x4(simCurrent);
             PortalTravelled?.Invoke(from, to);
         }
-
-        int interpolationOffSteps;
 
         // ------------------------------------------------------------------ state from outside
 
@@ -496,6 +537,7 @@ namespace GravityPortals
             Body.position = position;
             Body.rotation = rotation;
             transform.SetPositionAndRotation(position, rotation);
+            simPrevious = simCurrent = position; // a respawn is a deliberate cut, not a glide
             if (!Body.isKinematic) Body.linearVelocity = velocity;
             bodyRotation = rotation;
             gravityDirection = gravity.sqrMagnitude > 0f ? gravity.normalized : Vector3.down;

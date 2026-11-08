@@ -51,6 +51,12 @@ namespace GravityPortals
             light.SetColor("_BaseColor", new Color(0.55f, 0.58f, 0.64f));
             light.SetFloat("_Smoothness", 0.5f);
 
+            // Draw the weapon after portal surfaces (queue 2010): while you step through a
+            // portal, its surface is drawn on top of everything behind it, and the gun must stay
+            // on top of that.
+            glow = new Material(CombatFx.Unlit) { name = "GunGlow (runtime)" };
+            metal.renderQueue = light.renderQueue = glow.renderQueue = ViewmodelQueue;
+
             pivot = new GameObject("Pivot").transform;
             pivot.SetParent(transform, false);
 
@@ -84,7 +90,7 @@ namespace GravityPortals
             flashGo.transform.SetParent(pivot, false);
             flashGo.transform.localScale = Vector3.one * 0.07f;
             flash = flashGo.GetComponent<Renderer>();
-            flash.sharedMaterial = CombatFx.Unlit;
+            flash.sharedMaterial = glow;
             flashLight = flashGo.AddComponent<Light>();
             flashLight.type = LightType.Point;
             flashLight.range = 5f;
@@ -114,9 +120,12 @@ namespace GravityPortals
         static void Box(Transform parent, Material mat, Vector3 pos, Vector3 scale, Quaternion? rot = null) =>
             Part(parent, PrimitiveType.Cube, mat, pos, scale, rot ?? Quaternion.identity);
 
+        const int ViewmodelQueue = 2050;
+        static Material glow;
+
         static void Glow(Transform parent, PrimitiveType type, Vector3 pos, Vector3 scale, Quaternion rot, Color color)
         {
-            var r = Part(parent, type, CombatFx.Unlit, pos, scale, rot);
+            var r = Part(parent, type, glow, pos, scale, rot);
             CombatFx.SetColor(r, color * 2.2f);
         }
 

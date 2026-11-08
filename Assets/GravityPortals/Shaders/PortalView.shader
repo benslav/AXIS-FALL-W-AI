@@ -11,6 +11,7 @@ Shader "GravityPortals/PortalView"
         _Thick ("Thick (passing through)", Float) = 0
         _FlipY ("Flip View Y", Float) = 0
         _Clarity ("Clarity (1 = clean opening, no effects)", Float) = 0
+        [Enum(UnityEngine.Rendering.CompareFunction)] _ZTest ("Z Test (Always while your eye is right at the opening)", Float) = 4
     }
 
     SubShader
@@ -23,6 +24,7 @@ Shader "GravityPortals/PortalView"
             Tags { "LightMode" = "UniversalForward" }
             Cull Off
             ZWrite On
+            ZTest [_ZTest]
 
             HLSLPROGRAM
             #pragma vertex vert

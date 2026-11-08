@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 
 namespace GravityPortals
 {
@@ -30,7 +31,10 @@ namespace GravityPortals
         static readonly int HasViewId = Shader.PropertyToID("_HasView");
         static readonly int ThickId = Shader.PropertyToID("_Thick");
         static readonly int ClarityId = Shader.PropertyToID("_Clarity");
+        static readonly int ZTestId = Shader.PropertyToID("_ZTest");
+        bool drawOnTop;
         float currentScale = -1f;
+        bool targetIsHdr;
 
         Portal portal;
         Camera viewCamera;
@@ -55,6 +59,10 @@ namespace GravityPortals
             int surfaceLayer = LayerPortalSurface;
             // Don't draw portal surfaces inside portal views (no recursion).
             if (surfaceLayer >= 0) viewCamera.cullingMask = ~(1 << surfaceLayer);
+            // No post-processing here: the main camera applies it to the portal surface along
+            // with everything else, so the view through a portal looks exactly like the real
+            // thing once you step through (no colour or brightness pop).
+            viewCamera.GetUniversalAdditionalCameraData().renderPostProcessing = false;
         }
 
         void OnEnable()
@@ -125,6 +133,20 @@ namespace GravityPortals
 
             viewCamera.enabled = visible;
             material.SetFloat(HasViewId, visible ? 1f : 0f);
+
+            // The last few centimetres before you cross: your camera can't draw anything closer
+            // than its near clip distance, so the portal surface gets clipped a moment before
+            // the wall or door it's mounted on does, and that wall flashes into view. While your
+            // eye is right at the opening, draw the portal on top of whatever is behind it.
+            // (Done here, with the camera's final position for this frame.)
+            Vector3 eye = transform.InverseTransformPoint(main.transform.position);
+            bool atOpening = eye.z < 0.15f && eye.z > -0.9f
+                && Mathf.Abs(eye.x) < portal.size.x * 0.5f + 0.1f && Mathf.Abs(eye.y) < portal.size.y * 0.5f + 0.1f;
+            if (atOpening != drawOnTop)
+            {
+                drawOnTop = atOpening;
+                material.SetFloat(ZTestId, (float)(atOpening ? CompareFunction.Always : CompareFunction.LessEqual));
+            }
             // Clean-look portals are always a clear opening; energy-look ones clear up as you approach.
             material.SetFloat(ClarityId, portal.CleanLook ? 1f : Mathf.Clamp01((6f - distance) / 4f));
             if (!visible) return;
@@ -145,20 +167,33 @@ namespace GravityPortals
             viewCamera.farClipPlane = main.farClipPlane;
             viewCamera.aspect = main.aspect;
             viewCamera.clearFlags = main.clearFlags;
+            viewCamera.allowHDR = main.allowHDR;
+            viewCamera.allowMSAA = main.allowMSAA;
             viewCamera.backgroundColor = main.backgroundColor;
             viewCamera.depth = main.depth - 1f;
 
-            // Tilt the near plane onto the linked portal's surface.
-            Vector3 n = linked.Normal;
+            // Tilt the near plane onto the linked portal's surface, so nothing behind that surface
+            // (the wall it's on, door posts, screens) can ever show in the view.
+            Vector3 n = linked.Normal;                 // points out of the exit, into its room
             Vector3 p = linked.transform.position;
-            float side = Mathf.Sign(Vector3.Dot(n, p - ct.position));
+            float behind = Vector3.Dot(n, p - ct.position);
+            if (behind <= 0f)
+            {
+                // You've already crossed the entrance (the pass registers on the next physics
+                // step), so this camera is in the exit's room: nothing to cut away.
+                viewCamera.projectionMatrix = main.projectionMatrix;
+                return;
+            }
+            // Cut exactly at the surface, nudged a few millimetres into the room so the wall face
+            // itself never peeks through. Never switch the cut off up close (that let the wall
+            // behind the exit show for a frame as you stepped in): just keep it at least 3 cm
+            // from the camera, where the projection stays well behaved.
+            float push = Mathf.Max(0.004f, 0.03f - behind);
             Matrix4x4 w2c = viewCamera.worldToCameraMatrix;
-            Vector3 camPos = w2c.MultiplyPoint(p);
-            Vector3 camNormal = w2c.MultiplyVector(n) * side;
-            float camDist = -Vector3.Dot(camPos, camNormal) + 0.05f;
-            viewCamera.projectionMatrix = Mathf.Abs(camDist) > 0.2f
-                ? main.CalculateObliqueMatrix(new Vector4(camNormal.x, camNormal.y, camNormal.z, camDist))
-                : main.projectionMatrix;
+            Vector3 camPoint = w2c.MultiplyPoint(p + n * push);
+            Vector3 camNormal = w2c.MultiplyVector(n);
+            viewCamera.projectionMatrix = main.CalculateObliqueMatrix(
+                new Vector4(camNormal.x, camNormal.y, camNormal.z, -Vector3.Dot(camPoint, camNormal)));
         }
 
         void EnsureTarget(Camera main, float scale)
@@ -166,7 +201,14 @@ namespace GravityPortals
             currentScale = scale;
             int w = Mathf.Max(64, Mathf.RoundToInt(main.pixelWidth * scale));
             int h = Mathf.Max(64, Mathf.RoundToInt(main.pixelHeight * scale));
-            if (target != null && target.width == w && target.height == h) return;
+            // Match the main camera's colour range so the view through the portal and the view
+            // after stepping through are indistinguishable. (Anti-aliasing comes from the camera
+            // itself, allowMSAA above; URP resolves it before writing into this texture.)
+            bool hdr = main.allowHDR;
+            // Compare with what we asked for last time: Unity reports the concrete format it
+            // picked (e.g. ARGBHalf), never "DefaultHDR", so comparing target.format would
+            // recreate the texture every frame and the portal would only ever show black.
+            if (target != null && target.width == w && target.height == h && targetIsHdr == hdr) return;
 
             if (target != null)
             {
@@ -174,8 +216,10 @@ namespace GravityPortals
                 target.Release();
                 Destroy(target);
             }
-            target = new RenderTexture(w, h, 24, RenderTextureFormat.Default) { name = $"{portal.name} view" };
+            var format = hdr ? RenderTextureFormat.DefaultHDR : RenderTextureFormat.Default;
+            target = new RenderTexture(w, h, 24, format) { name = $"{portal.name} view" };
             target.Create();
+            targetIsHdr = hdr;
             viewCamera.targetTexture = target;
             material.SetTexture(MainTexId, target);
         }
