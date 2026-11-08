@@ -210,6 +210,14 @@ namespace GravityPortals
         [Rpc(SendTo.Owner)]
         public void KnockbackRpc(Vector3 velocityChange) => controller.AddVelocity(velocityChange);
 
+        /// <summary>Owner → server: on a test map, go back to the start (no death counted).</summary>
+        [Rpc(SendTo.Server)]
+        public void RequestReturnRpc(RpcParams rpcParams = default)
+        {
+            if (rpcParams.Receive.SenderClientId != OwnerClientId || !TestMap.Active) return;
+            ServerRespawn();
+        }
+
         // ------------------------------------------------------------------ server
 
         [Rpc(SendTo.Server, Delivery = RpcDelivery.Unreliable)]
