@@ -42,6 +42,7 @@ namespace GravityPortals
         Material material;
         Renderer surface;
         float thickness = 0.02f;
+        int surfaceLayer = -1;
 
         public static int LayerPortalSurface => LayerMask.NameToLayer("PortalSurface");
         public static int LayerLocalPlayer => LayerMask.NameToLayer("LocalPlayer");
@@ -56,7 +57,7 @@ namespace GravityPortals
             go.transform.SetParent(transform, false);
             viewCamera = go.AddComponent<Camera>();
             viewCamera.enabled = false;
-            int surfaceLayer = LayerPortalSurface;
+            surfaceLayer = LayerPortalSurface;
             // Don't draw portal surfaces inside portal views (no recursion).
             if (surfaceLayer >= 0) viewCamera.cullingMask = ~(1 << surfaceLayer);
             // No post-processing here: the main camera applies it to the portal surface along
@@ -161,6 +162,16 @@ namespace GravityPortals
             var ct = viewCamera.transform;
             ct.SetPositionAndRotation(transfer.MultiplyPoint3x4(main.transform.position),
                 Portal.TransferRotation(portal, linked) * main.transform.rotation);
+
+            // Portal views show your own body (so you can see yourself through a portal), except
+            // when this camera is right where your head is: e.g. just after dropping through a
+            // floor portal, looking back through the entrance, it would see your body from inside.
+            int mask = surfaceLayer >= 0 ? ~(1 << surfaceLayer) : ~0;
+            var me = GravityPlayerController.Local;
+            int localLayer = LayerLocalPlayer;
+            if (me != null && localLayer >= 0 && (ct.position - me.transform.position).sqrMagnitude < 1.5f * 1.5f)
+                mask &= ~(1 << localLayer);
+            viewCamera.cullingMask = mask;
 
             viewCamera.fieldOfView = main.fieldOfView;
             viewCamera.nearClipPlane = main.nearClipPlane;

@@ -297,8 +297,31 @@ namespace GravityPortals
             // On stairs the camera rides on the tread under you: it lags the smooth ramp, then
             // catches up quickly at each step edge, so climbing feels like steps.
             stairOffset = Mathf.Lerp(stairOffset, stairTarget, 1f - Mathf.Exp(-22f * Time.deltaTime));
-            viewCamera.transform.SetPositionAndRotation(RenderPosition + up * (eyeHeight - landDip + stairOffset), AimRotation);
+            Vector3 eye = RenderPosition + up * (eyeHeight - landDip + stairOffset);
+            Quaternion look = AimRotation;
+            SeeThroughPortal(ref eye, ref look);
+            viewCamera.transform.SetPositionAndRotation(eye, look);
             viewCamera.fieldOfView = baseFov + fovKick;
+        }
+
+        /// <summary>The body goes through a portal when its center crosses, but the camera
+        /// should cross when the eye does. Dropping into a floor portal the eye is still above
+        /// the entrance when the center crosses, so right after the pass it sits behind the
+        /// exit, inside the wall it's mounted on. While the eye is behind a portal you're
+        /// passing through (inside its opening), draw it at the matching spot on the other
+        /// side instead: looking through that portal, exactly as the eye would see it.</summary>
+        void SeeThroughPortal(ref Vector3 eye, ref Quaternion look)
+        {
+            foreach (var p in PortalsPassing)
+            {
+                if (p == null || p.linkedPortal == null) continue;
+                Vector3 e = p.transform.InverseTransformPoint(eye);
+                if (e.z >= 0f || e.z < -1.5f) continue;
+                if (Mathf.Abs(e.x) > p.size.x * 0.5f || Mathf.Abs(e.y) > p.size.y * 0.5f) continue;
+                eye = Portal.TransferMatrix(p, p.linkedPortal).MultiplyPoint3x4(eye);
+                look = Portal.TransferRotation(p, p.linkedPortal) * look;
+                return;
+            }
         }
 
         // ------------------------------------------------------------------ physics
@@ -682,7 +705,7 @@ namespace GravityPortals
             Color c = warningPortal.color;
 
             // New "down" as seen from your camera.
-            Vector3 d = viewCamera.transform.InverseTransformDirection(warningGravity);
+            Vector3 d = Quaternion.Inverse(AimRotation) * warningGravity;
             Vector2 screenDir = new Vector2(d.x, -d.y); // GUI y points down
             string where = d.z > 0.7f ? " (ahead)" : d.z < -0.7f ? " (behind you)" : "";
 

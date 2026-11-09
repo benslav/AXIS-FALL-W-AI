@@ -57,6 +57,9 @@ namespace GravityPortals
 
         public bool IsIgnoring(Portal portal) => ignoringPortals.Contains(portal);
 
+        /// <summary>The portals this traveller is currently passing through.</summary>
+        public IEnumerable<Portal> PortalsPassing => ignoringPortals;
+
         /// <summary>True if this traveller is currently passing through the given surface.
         /// Physics.IgnoreCollision does not affect queries, so ground checks and hitscan
         /// must check this themselves.</summary>
