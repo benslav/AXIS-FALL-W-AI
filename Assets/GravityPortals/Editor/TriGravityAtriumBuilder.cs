@@ -33,7 +33,7 @@ public static class TriGravityAtriumBuilder
     const string VersionKey = "ClaudeTest.TriGravityAtrium.Version";
     const string LargeVersionKey = "ClaudeTest.TriGravityAtriumLarge.Version";
     const int Version = 5; // 2 upright doors, 3 vault arrivals, 4 ground floor portals, 5 stair steps
-    const int LargeVersion = 1;
+    const int LargeVersion = 2; // 2 = families on all six faces
 
     const float Wall = 1f;
 
@@ -64,17 +64,22 @@ public static class TriGravityAtriumBuilder
     [MenuItem("Tools/Gravity Portals/Build Tri-Gravity Atrium")]
     public static void Build()
     {
-        Size = 32f; CubeCenter = 20f; CubeHalf = 3f;
+        Size = 32f; CubeCenter = 20f; CubeHalf = 3f; Families = 3;
         GravityArenaBuilder.BuildScene(ScenePath, Layout, new Vector3(30f, 14f, 30f), new Vector3(10f, 10f, 10f));
     }
 
-    /// <summary>Bigger hall (44 m) with the central cube in the exact middle of it.</summary>
+    /// <summary>Bigger hall (44 m) with the central cube in the exact middle of it, and a family
+    /// on every one of the six faces: the original three plus their mirror images through the
+    /// hall's center (ceiling, east wall, north wall).</summary>
     [MenuItem("Tools/Gravity Portals/Build Tri-Gravity Atrium (Large)")]
     public static void BuildLarge()
     {
-        Size = 44f; CubeCenter = 22f; CubeHalf = 4f;
+        Size = 44f; CubeCenter = 22f; CubeHalf = 4f; Families = 6;
         GravityArenaBuilder.BuildScene(LargeScenePath, Layout, new Vector3(40f, 20f, 40f), new Vector3(16f, 12f, 16f));
     }
+
+    /// <summary>3 = floor, west and south walls; 6 = every face (families 3-5 mirror 0-2).</summary>
+    static int Families = 3;
 
     /// <summary>A point relative to the central cube, in family Y's frame (y = up from its top face).</summary>
     static Vector3 Cube(float x, float y, float z) => new Vector3(CubeCenter + x, CubeCenter + y, CubeCenter + z);
@@ -89,7 +94,28 @@ public static class TriGravityAtriumBuilder
         return v;
     }
 
-    static readonly string[] FamilyNames = { "Y (floor)", "X (west wall)", "Z (south wall)" };
+    // Families 3-5 are families 0-2 mirrored through the hall's center: same layout, on the
+    // opposite face, with gravity pointing the other way.
+    static Vector3 Pt(Vector3 point, int k)
+    {
+        var p = P(point, k % 3);
+        return k >= 3 ? Vector3.one * Size - p : p;
+    }
+
+    static Vector3 Dir(Vector3 direction, int k)
+    {
+        var d = P(direction, k % 3);
+        return k >= 3 ? -d : d;
+    }
+
+    static Vector3 Sz(Vector3 size, int k) => P(size, k % 3);
+
+    /// <summary>The family a portal ring leads on to (each half of the six stays its own ring;
+    /// floor portals and vault drops link the two halves).</summary>
+    static int Next(int k) => k < 3 ? (k + 1) % 3 : (k - 3 + 1) % 3 + 3;
+
+    static readonly string[] FamilyNames =
+        { "Y (floor)", "X (west wall)", "Z (south wall)", "-Y (ceiling)", "-X (east wall)", "-Z (north wall)" };
 
     // ------------------------------------------------------------------ layout
 
@@ -102,12 +128,13 @@ public static class TriGravityAtriumBuilder
         // The central cube: one face per family (top for Y, +X face for X, +Z face for Z).
         GravityArenaBuilder.Block("Central Cube", Cube(0f, 0f, 0f), Vector3.one * CubeHalf * 2f, stone);
 
-        var portals = new Portal[3, PortalSlots];
-        for (int k = 0; k < 3; k++) FamilyGeometry(k);
-        for (int k = 0; k < 3; k++) FamilyPortals(k, portals);
+        var portals = new Portal[Families, PortalSlots];
+        for (int k = 0; k < Families; k++) FamilyGeometry(k);
+        for (int k = 0; k < Families; k++) FamilyPortals(k, portals);
         LinkRing(portals);
+        if (Families == 6) MirrorDoors();
 
-        for (int k = 0; k < 3; k++) FamilySpawns(k);
+        for (int k = 0; k < Families; k++) FamilySpawns(k);
     }
 
     static void CreateMaterials()
@@ -124,6 +151,10 @@ public static class TriGravityAtriumBuilder
             GravityArenaBuilder.LitMaterial("Atrium Ground Y", new Color(0.80f, 0.72f, 0.58f), grid, new Vector2(16, 16)),
             GravityArenaBuilder.LitMaterial("Atrium Ground X", new Color(0.62f, 0.72f, 0.60f), grid, new Vector2(16, 16)),
             GravityArenaBuilder.LitMaterial("Atrium Ground Z", new Color(0.62f, 0.66f, 0.78f), grid, new Vector2(16, 16)),
+            // Mirror families (large hall): ceiling, east wall, north wall.
+            GravityArenaBuilder.LitMaterial("Atrium Ground -Y", new Color(0.80f, 0.62f, 0.62f), grid, new Vector2(16, 16)),
+            GravityArenaBuilder.LitMaterial("Atrium Ground -X", new Color(0.56f, 0.74f, 0.76f), grid, new Vector2(16, 16)),
+            GravityArenaBuilder.LitMaterial("Atrium Ground -Z", new Color(0.72f, 0.64f, 0.80f), grid, new Vector2(16, 16)),
         };
         skies = new[]
         {
@@ -149,10 +180,10 @@ public static class TriGravityAtriumBuilder
         // Lamps: one in the middle, two per family (copied by the symmetry).
         AddLamp("Lamp Center", new Vector3(11f, 11f, 11f), 30f, 3.5f);
         if (Size > 36f) AddLamp("Lamp Far", Vector3.one * (Size - 9f), 32f, 3.5f); // light the extra space in the large hall
-        for (int k = 0; k < 3; k++)
+        for (int k = 0; k < Families; k++)
         {
-            AddLamp($"Lamp {k}a", P(new Vector3(16f, 7f, 6f), k), 20f, 3f);
-            AddLamp($"Lamp {k}b", P(new Vector3(8f, 27f, 26f), k), 20f, 3f);
+            AddLamp($"Lamp {k}a", Pt(new Vector3(16f, 7f, 6f), k), 20f, 3f);
+            if (k < 3) AddLamp($"Lamp {k}b", Pt(new Vector3(8f, 27f, 26f), k), 20f, 3f);
         }
     }
 
@@ -175,7 +206,11 @@ public static class TriGravityAtriumBuilder
         {
             // Ground of family k, and the vault opposite it.
             Box($"Ground {FamilyNames[k]}", k, new Vector3(Size / 2, -Wall / 2, Size / 2), new Vector3(Size + 2 * Wall, Wall, Size + 2 * Wall), grounds[k]);
-            Box($"Vault opposite {FamilyNames[k]}", k, new Vector3(Size / 2, Size + Wall / 2, Size / 2), new Vector3(Size + 2 * Wall, Wall, Size + 2 * Wall), skies[k]);
+            // The opposite face: a bare vault, or (large hall) the mirror family's ground.
+            if (Families == 6)
+                Box($"Ground {FamilyNames[k + 3]}", k + 3, new Vector3(Size / 2, -Wall / 2, Size / 2), new Vector3(Size + 2 * Wall, Wall, Size + 2 * Wall), grounds[k + 3]);
+            else
+                Box($"Vault opposite {FamilyNames[k]}", k, new Vector3(Size / 2, Size + Wall / 2, Size / 2), new Vector3(Size + 2 * Wall, Wall, Size + 2 * Wall), skies[k]);
         }
 
         // Ink lines along all 12 edges of the hall, like a drawn outline.
@@ -222,6 +257,14 @@ public static class TriGravityAtriumBuilder
         Box($"Ground Door {f}", k, new Vector3(20f, 2f, 4f), new Vector3(6f, 4f, 1f), stoneDark);
         Box($"Ground Door Lintel {f}", k, new Vector3(20f, 4.3f, 4.6f), new Vector3(6.4f, 0.6f, 1.4f), stone);
 
+        // Six-family hall: a mirror door tucked under the landing, leading to the same door on
+        // the opposite face (floor <-> ceiling, west <-> east, south <-> north).
+        if (Families == 6)
+        {
+            Box($"Mirror Door Panel {f}", k, new Vector3(4f, 2f, 30.25f), new Vector3(3f, 4f, 0.5f), ink);
+            Box($"Mirror Door Lintel {f}", k, new Vector3(4f, 4.3f, 30.25f), new Vector3(3.4f, 0.6f, 0.7f), stone);
+        }
+
         // Cover on the ground.
         Box($"Cover A {f}", k, new Vector3(12f, 0.75f, 9f), new Vector3(3f, 1.5f, 1.2f), stoneDark);
         Box($"Cover B {f}", k, new Vector3(28f, 0.75f, 9f), new Vector3(1.2f, 1.5f, 3f), stoneDark);
@@ -259,9 +302,9 @@ public static class TriGravityAtriumBuilder
         Vector3 b = new Vector3(topX + step, run, z);
         Vector3 normalY = new Vector3(1f, 1f, 0f).normalized;
         const float thickness = 0.3f;
-        Vector3 dir = P(b - a, k);
-        Vector3 n = P(normalY, k);
-        Vector3 mid = P((a + b) * 0.5f, k) - n * thickness * 0.5f;
+        Vector3 dir = Dir(b - a, k);
+        Vector3 n = Dir(normalY, k);
+        Vector3 mid = Pt((a + b) * 0.5f, k) - n * thickness * 0.5f;
         var ramp = GameObject.CreatePrimitive(PrimitiveType.Cube);
         ramp.name = "Walkable Ramp (hidden)";
         ramp.transform.SetParent(root, false);
@@ -273,7 +316,7 @@ public static class TriGravityAtriumBuilder
 
         // Tell the player camera where the treads are, so walking it feels like steps.
         var steps = ramp.AddComponent<StairSteps>();
-        steps.origin = P(new Vector3(bottomX, 0f, z), k);
+        steps.origin = Pt(new Vector3(bottomX, 0f, z), k);
         steps.stepSize = step;
     }
 
@@ -298,17 +341,17 @@ public static class TriGravityAtriumBuilder
         // Arrivals in family k+1's world. The doors are upright for that family, so walking
         // through family k's door upright brings you out upright as family k+1 (portals keep
         // your orientation when you walk through like a door).
-        portals[k, 1] = MakePortal($"Cube Door (from {f})", k + 1, Cube(0.4f * CubeHalf, CubeHalf + 1.9f, CubeHalf - 0.51f), Vector3.back, Vector3.up, door);
-        portals[k, 3] = MakePortal($"Landing Arrival Door (from {f})", k + 1, new Vector3(9f, 11.9f, 28.24f), Vector3.back, Vector3.up, door);
+        portals[k, 1] = MakePortal($"Cube Door (from {f})", Next(k), Cube(0.4f * CubeHalf, CubeHalf + 1.9f, CubeHalf - 0.51f), Vector3.back, Vector3.up, door);
+        portals[k, 3] = MakePortal($"Landing Arrival Door (from {f})", Next(k), new Vector3(9f, 11.9f, 28.24f), Vector3.back, Vector3.up, door);
         // Dropping into the cube's floor portal brings you out of the vault above the next
         // family's ground, facing down onto it: your fall carries through and you land there.
         // (Placed so you land on open floor, not on that family's own floor portal.)
-        portals[k, 5] = MakePortal($"Vault Arrival (from {f} cube)", k + 1, new Vector3(17f, Size, 10f), Vector3.down, Vector3.forward, pad);
+        portals[k, 5] = MakePortal($"Vault Arrival (from {f} cube)", Next(k), new Vector3(17f, Size, 10f), Vector3.down, Vector3.forward, pad);
 
         // Floor portal on the ground: drop in and you fall out of the vault above the next
         // family's ground, landing on it.
         portals[k, 6] = MakePortal($"Ground Floor Portal {f}", k, new Vector3(26f, 0f, 26f), Vector3.up, Vector3.forward, pad);
-        portals[k, 7] = MakePortal($"Vault Arrival (from {f} ground)", k + 1, new Vector3(14f, Size, 4f), Vector3.down, Vector3.forward, pad);
+        portals[k, 7] = MakePortal($"Vault Arrival (from {f} ground)", Next(k), new Vector3(14f, Size, 4f), Vector3.down, Vector3.forward, pad);
 
         // The four door portals are walk-through doorways: clean openings, no frame posts.
         for (int slot = 0; slot < 4; slot++) portals[k, slot].doorway = true;
@@ -321,35 +364,53 @@ public static class TriGravityAtriumBuilder
         { new Color(0.35f, 1f, 0.85f), new Color(1f, 0.4f, 0.4f), new Color(0.6f, 1f, 0.25f), new Color(1f, 0.7f, 0.85f) },
     };
 
+    /// <summary>The bridges between the two halves of the six-family hall: each family's mirror
+    /// door leads to the same door on the opposite face. Walk through upright and you come out
+    /// upright on the opposite face (the floor family steps out onto the ceiling, and so on).</summary>
+    static void MirrorDoors()
+    {
+        var door = new Vector2(2.4f, 3.6f);
+        Vector3 pos = new Vector3(4f, 1.85f, 29.99f);
+        for (int k = 0; k < 3; k++)
+        {
+            var a = MakePortal($"Mirror Door {FamilyNames[k]}", k, pos, Vector3.back, Vector3.up, door);
+            var b = MakePortal($"Mirror Door {FamilyNames[k + 3]}", k + 3, pos, Vector3.back, Vector3.up, door);
+            a.doorway = b.doorway = true;
+            a.color = b.color = new Color(0.92f, 0.92f, 0.98f);
+            GravityArenaBuilder.Link(a, b);
+        }
+    }
+
     static void LinkRing(Portal[,] portals)
     {
-        for (int k = 0; k < 3; k++)
+        for (int k = 0; k < portals.GetLength(0); k++)
             for (int pair = 0; pair < PortalSlots / 2; pair++)
             {
                 var a = portals[k, pair * 2];
                 var b = portals[k, pair * 2 + 1];
-                a.color = b.color = PairColors[k, pair];
+                Color c = PairColors[k % 3, pair];
+                a.color = b.color = k < 3 ? c : Color.Lerp(c, Color.white, 0.35f); // mirror families: paler
                 GravityArenaBuilder.Link(a, b);
             }
     }
 
     static void FamilySpawns(int k)
     {
-        Vector3 up = P(Vector3.up, k);
-        GravityArenaBuilder.AddSpawnPoint($"Spawn {FamilyNames[k]} A", P(new Vector3(6f, 0.95f, 6f), k),
-            Quaternion.LookRotation(P(new Vector3(1f, 0f, 1f).normalized, k), up));
-        GravityArenaBuilder.AddSpawnPoint($"Spawn {FamilyNames[k]} B", P(new Vector3(28f, 0.95f, 16f), k),
-            Quaternion.LookRotation(P(Vector3.left, k), up));
-        GravityArenaBuilder.AddPropSpawn($"Crate {FamilyNames[k]}", P(new Vector3(14f, 0.4f, 14f), k),
-            Quaternion.LookRotation(P(Vector3.forward, k), up));
+        Vector3 up = Dir(Vector3.up, k);
+        GravityArenaBuilder.AddSpawnPoint($"Spawn {FamilyNames[k]} A", Pt(new Vector3(6f, 0.95f, 6f), k),
+            Quaternion.LookRotation(Dir(new Vector3(1f, 0f, 1f).normalized, k), up));
+        GravityArenaBuilder.AddSpawnPoint($"Spawn {FamilyNames[k]} B", Pt(new Vector3(28f, 0.95f, 16f), k),
+            Quaternion.LookRotation(Dir(Vector3.left, k), up));
+        GravityArenaBuilder.AddPropSpawn($"Crate {FamilyNames[k]}", Pt(new Vector3(14f, 0.4f, 14f), k),
+            Quaternion.LookRotation(Dir(Vector3.forward, k), up));
     }
 
     // ------------------------------------------------------------------ helpers
 
     /// <summary>Axis-aligned box defined in family Y's frame, rotated into family k's.</summary>
     static GameObject Box(string name, int k, Vector3 center, Vector3 size, Material mat) =>
-        GravityArenaBuilder.Block(name, P(center, k), P(size, k), mat);
+        GravityArenaBuilder.Block(name, Pt(center, k), Sz(size, k), mat);
 
     static Portal MakePortal(string name, int k, Vector3 position, Vector3 normal, Vector3 upHint, Vector2 size) =>
-        GravityArenaBuilder.Make(name, P(position, k), P(normal, k), P(upHint, k), size, Color.white);
+        GravityArenaBuilder.Make(name, Pt(position, k), Dir(normal, k), Dir(upHint, k), size, Color.white);
 }
