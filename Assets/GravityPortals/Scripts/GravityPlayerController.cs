@@ -35,7 +35,7 @@ namespace GravityPortals
         public float sprintSpeed = 11f;
         public float groundAcceleration = 70f;
         public float airAcceleration = 20f;
-        public float jumpSpeed = 7.5f;
+        public float jumpSpeed = 9f;
         public float maxSlopeAngle = 50f;
         public float maxFallSpeed = 45f;
 
@@ -45,6 +45,18 @@ namespace GravityPortals
         public float cameraEaseRate = 6f;
         [Tooltip("Slowest the camera eases (degrees/second), so the last few degrees don't drag on.")]
         public float cameraEaseMinSpeed = 150f;
+
+        [Header("Grappling hook")]
+        [Tooltip("How far the hook reaches (m).")]
+        public float grappleRange = 45f;
+        [Tooltip("How fast the rope reels in while you hang on (m/s).")]
+        public float grappleReelSpeed = 5f;
+        [Tooltip("The rope never reels shorter than this (m).")]
+        public float grappleMinLength = 3f;
+        [Tooltip("How hard WASD pumps your swing while hooked (m/s²).")]
+        public float grappleSwingAcceleration = 12f;
+        [Tooltip("Top speed while hooked (m/s); stays under the server's movement check.")]
+        public float grappleMaxSpeed = 38f;
 
         [Header("Recoil")]
         [Tooltip("How fast the view settles back after recoil.")]
@@ -89,6 +101,20 @@ namespace GravityPortals
 
         readonly RaycastHit[] hits = new RaycastHit[16];
 
+        // Grappling hook
+        bool grappling;
+        Vector3 grappleAnchor;
+        float ropeLength;
+        float grappleReadyTime;
+
+        /// <summary>True while the hook is attached (on every machine, for drawing the rope).</summary>
+        public bool IsGrappling => grappling;
+        public Vector3 GrappleAnchor => grappleAnchor;
+        /// <summary>Where the rope leaves the player: the right hand for you, the chest for others.</summary>
+        public Vector3 RopeStart => IsLocallyControlled && viewCamera != null
+            ? viewCamera.transform.TransformPoint(new Vector3(0.22f, -0.22f, 0.45f))
+            : transform.position + (bodyRotation * Vector3.up) * 0.3f;
+
         public bool IsLocallyControlled { get; private set; } = true;
         public bool IsAlive => alive;
         /// <summary>Where shots come from: the eye.</summary>
@@ -129,6 +155,7 @@ namespace GravityPortals
             if (viewCamera == null) viewCamera = Camera.main;
             mouseSensitivity = PlayerPrefs.GetFloat(MainMenuUI.SensitivityKey, mouseSensitivity); // from Settings
             SetLocalControl(true, viewCamera);
+            if (!Application.isBatchMode) gameObject.AddComponent<GrappleRope>();
         }
 
         /// <summary>Local: full simulation, input and camera. Remote: kinematic puppet.</summary>
@@ -200,6 +227,10 @@ namespace GravityPortals
             moveInput = alive ? new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical")) : Vector2.zero;
             sprinting = Input.GetKey(KeyCode.LeftShift);
             if (alive && Input.GetButtonDown("Jump")) jumpBufferedUntil = Time.time + 0.15f;
+
+            // Grappling hook: right mouse fires it, hold to hang on, let go to fly off.
+            if (alive && looking && Input.GetMouseButtonDown(1)) TryGrapple();
+            if (grappling && (!alive || !Input.GetMouseButton(1))) ReleaseGrapple();
 
             float settle = 1f - Mathf.Exp(-recoilRecovery * Time.deltaTime);
             recoilPitch = Mathf.Lerp(recoilPitch, 0f, settle);
@@ -412,12 +443,111 @@ namespace GravityPortals
             // On walkable ground, gravity presses into the surface so you don't slide down slopes.
             Vector3 gravity = (grounded ? -groundNormal : gravityDirection) * gravityStrength;
             velocity = lateral + vertical + gravity * dt;
+            if (grappling) velocity = ApplyGrapple(velocity, wish, dt);
 
             float fallSpeed = Vector3.Dot(velocity, gravityDirection);
             if (fallSpeed > maxFallSpeed) velocity -= gravityDirection * (fallSpeed - maxFallSpeed);
             lastFallSpeed = grounded ? 0f : Mathf.Max(0f, fallSpeed);
 
             Body.linearVelocity = velocity;
+        }
+
+        // ------------------------------------------------------------------ grappling hook
+
+        void TryGrapple()
+        {
+            if (Time.time < grappleReadyTime || Body.isKinematic) return;
+            Vector3 origin = viewCamera != null ? viewCamera.transform.position : EyePosition;
+            Vector3 dir = AimRotation * Vector3.forward;
+
+            // The nearest solid level surface: not players, crates or bolts (anything with a
+            // rigidbody), and not a wall you're passing through a portal in.
+            int count = Physics.RaycastNonAlloc(origin, dir, hits, grappleRange, ~0, QueryTriggerInteraction.Ignore);
+            float best = float.MaxValue;
+            Vector3 point = Vector3.zero;
+            for (int i = 0; i < count; i++)
+            {
+                var h = hits[i];
+                if (h.distance >= best || h.collider.attachedRigidbody != null || IsHostIgnored(h.collider)) continue;
+                best = h.distance;
+                point = h.point;
+            }
+            if (best == float.MaxValue)
+            {
+                Sfx.Play2D(SoundBank.Empty, 0.35f, 0.7f);
+                return;
+            }
+
+            // The rope can't go through a portal: aiming into one (rather than at the wall
+            // around it) is a miss.
+            foreach (var p in Portal.All)
+            {
+                if (p == null || p.worldWrap) continue;
+                float facing = Vector3.Dot(dir, p.Normal);
+                if (facing >= -1e-4f) continue;
+                float t = Vector3.Dot(p.transform.position - origin, p.Normal) / facing;
+                if (t <= 0f || t >= best) continue;
+                Vector3 local = p.transform.InverseTransformPoint(origin + dir * t);
+                if (Mathf.Abs(local.x) <= p.size.x * 0.5f && Mathf.Abs(local.y) <= p.size.y * 0.5f)
+                {
+                    Sfx.Play2D(SoundBank.Empty, 0.35f, 0.7f);
+                    return;
+                }
+            }
+
+            grappling = true;
+            grappleAnchor = point;
+            ropeLength = Mathf.Max(grappleMinLength, Vector3.Distance(Body.position, point));
+            Sfx.Play2D(SoundBank.Click, 0.6f, 0.55f);
+        }
+
+        void ReleaseGrapple()
+        {
+            if (!grappling) return;
+            grappling = false;
+            grappleReadyTime = Time.time + 0.15f;
+        }
+
+        /// <summary>Remote players: just enough to draw their rope.</summary>
+        public void SetRemoteGrapple(bool on, Vector3 anchor)
+        {
+            if (IsLocallyControlled) return;
+            grappling = on;
+            grappleAnchor = anchor;
+        }
+
+        /// <summary>The rope: reels in slowly and never lets you get further from the anchor than
+        /// its length, so falling turns into a swing (a pendulum). WASD pumps the swing.</summary>
+        Vector3 ApplyGrapple(Vector3 velocity, Vector3 wish, float dt)
+        {
+            Vector3 toAnchor = grappleAnchor - Body.position;
+            float dist = toAnchor.magnitude;
+            if (dist > grappleRange * 1.5f) { ReleaseGrapple(); return velocity; } // e.g. carried off by a knockback
+            if (dist < 0.05f) return velocity;
+            Vector3 dir = toAnchor / dist;
+
+            // Reel in, but never leave more than a little slack (so swinging back out doesn't
+            // end in a sudden yank).
+            ropeLength = Mathf.Max(grappleMinLength, Mathf.Min(ropeLength, dist + 0.5f) - grappleReelSpeed * dt);
+
+            if (!grounded && wish.sqrMagnitude > 0.01f)
+                velocity += Vector3.ProjectOnPlane(wish.normalized, dir) * (grappleSwingAcceleration * dt);
+
+            if (dist > ropeLength)
+            {
+                // Taut: no moving away from the anchor, and an easy pull back to the rope's
+                // length. Sideways speed is kept, which is what makes it swing.
+                float inward = Vector3.Dot(velocity, dir);
+                float wanted = Mathf.Min((dist - ropeLength) * 6f, 12f);
+                if (inward < wanted) velocity += dir * (wanted - inward);
+                if (grounded && Vector3.Dot(dir, groundNormal) > 0.2f)
+                {
+                    grounded = false; // lifted off the floor
+                    noGroundUntil = Time.time + 0.1f;
+                }
+            }
+
+            return Vector3.ClampMagnitude(velocity, grappleMaxSpeed);
         }
 
         /// <summary>On a staircase: work out the tread under you for the camera, and play a
@@ -522,6 +652,7 @@ namespace GravityPortals
         {
             // The view is carried through exactly (what you saw through the portal is what you
             // see now), then AlignToGravity eases the camera back upright. Seamless: no flash.
+            ReleaseGrapple(); // the rope can't follow you through a portal
             bodyRotation = newRotation;
             Vector3 oldGravity = gravityDirection;
             // Your falling direction carries through the portal.
@@ -558,6 +689,7 @@ namespace GravityPortals
         {
             ClearPortalIgnores();
             ArrivalPortal = null;
+            grappling = false; // a respawn or correction drops the rope
             Body.position = position;
             Body.rotation = rotation;
             transform.SetPositionAndRotation(position, rotation);
@@ -644,7 +776,7 @@ namespace GravityPortals
             GUI.Label(new Rect(12, 10, 520, 22),
                 $"Gravity: {gravity}   Speed: {Body.linearVelocity.magnitude:0.0}   {(grounded ? "Grounded" : "Airborne")}");
             if (Cursor.lockState != CursorLockMode.Locked)
-                GUI.Label(new Rect(12, 32, 900, 22), "Click to play. WASD move, Shift sprint, Space jump, Mouse fire, R reload, 1/2 or wheel switch weapon, Tab scores, K respawn, Esc release mouse.");
+                GUI.Label(new Rect(12, 32, 1300, 22), "Click to play. WASD move, Shift sprint, Space jump, Mouse fire, Right mouse grapple (hold to swing), R reload, 1/2 or wheel switch weapon, Tab scores, K respawn, Esc release mouse.");
             if (TestMap.Active)
                 GUI.Label(new Rect(12, 54, 400, 22), "Test map: H = back to the start");
 

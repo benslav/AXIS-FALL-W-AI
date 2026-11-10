@@ -19,12 +19,47 @@ namespace GravityPortals
         public Vector3 period = new Vector3(64f, 64f, 64f);
         [Tooltip("How many cells out in each direction (1 = the 26 neighbours).")]
         public int range = 1;
+        [Tooltip("The level merged into one mesh (one submesh per material), baked by the map builder. " +
+                 "Each copy is then a single renderer instead of hundreds of parts.")]
+        public Mesh mesh;
+        public Material[] materials;
+
+        [Tooltip("Off for maps that generate their level at runtime and call Build() themselves.")]
+        public bool buildOnStart = true;
 
         void Start()
+        {
+            if (buildOnStart) Build();
+        }
+
+        /// <summary>Makes the copies (once the level and, if baked, its mesh are in place).</summary>
+        public void Build()
         {
             if (source == null || Application.isBatchMode) return;
 
             var all = new GameObject("Wrap-around copies (visual only)");
+            if (mesh != null && materials != null && materials.Length == mesh.subMeshCount)
+            {
+                for (int x = -range; x <= range; x++)
+                    for (int y = -range; y <= range; y++)
+                        for (int z = -range; z <= range; z++)
+                        {
+                            if (x == 0 && y == 0 && z == 0) continue;
+                            var copy = new GameObject($"Copy {x},{y},{z}");
+                            copy.transform.SetParent(all.transform, false);
+                            copy.transform.SetPositionAndRotation(
+                                source.position + Vector3.Scale(new Vector3(x, y, z), period), source.rotation);
+                            copy.transform.localScale = source.lossyScale;
+                            copy.AddComponent<MeshFilter>().sharedMesh = mesh;
+                            var r = copy.AddComponent<MeshRenderer>();
+                            r.sharedMaterials = materials;
+                            r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                            r.receiveShadows = false;
+                        }
+                return;
+            }
+
+            // Not baked: copy the level part by part (slow to draw on big maps).
             for (int x = -range; x <= range; x++)
                 for (int y = -range; y <= range; y++)
                     for (int z = -range; z <= range; z++)

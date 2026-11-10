@@ -23,10 +23,10 @@ public static class GravityPortalsBuild
     static readonly string[] MapScenes =
     {
         "Assets/GravityPortals/Scenes/MainMenu.unity", // first: the game starts on the menu
-        "Assets/GravityPortals/Scenes/GravityArena.unity",
         "Assets/GravityPortals/Scenes/TriGravityAtrium.unity",
         "Assets/GravityPortals/Scenes/TriGravityAtriumLarge.unity",
         "Assets/GravityPortals/Scenes/EndlessPavilion.unity",
+        "Assets/GravityPortals/Scenes/ShiftingPavilion.unity",
         "Assets/GravityPortals/Scenes/PortalTestLab.unity",
     };
 
@@ -104,9 +104,10 @@ public static class GravityPortalsBuild
     /// <summary>
     /// Bumps the version, builds Windows and Linux, zips each, and copies the zips plus a
     /// RELEASE.txt to the publish folder (same file names every time, so shared links stay
-    /// valid). Players on an older build are told to update when they try to join.
+    /// valid), then pushes both builds to itch.io. Players on an older build are told to update
+    /// when they try to join.
     /// </summary>
-    [MenuItem("Tools/Gravity Portals/Release (build Windows + Linux, zip, publish)", priority = 0)]
+    [MenuItem("Tools/Gravity Portals/Release (build Windows + Linux, publish to Drive + itch.io)", priority = 0)]
     public static void Release()
     {
         string previous = PlayerSettings.bundleVersion;
@@ -126,6 +127,10 @@ public static class GravityPortalsBuild
         {
             Debug.LogError($"[Release] Failed: {e}");
         }
+
+        // The builds are already out on Drive; if the itch.io upload fails it can be retried
+        // on its own (Tools > Gravity Portals > Build > Push Last Release to itch.io).
+        if (ok) PushToItch(version);
 
         if (!ok)
         {
@@ -206,6 +211,147 @@ public static class GravityPortalsBuild
         Debug.Log($"[Release] v{version} published to {target}");
         if (!Application.isBatchMode) EditorUtility.RevealInFinder(Path.Combine(target, "RELEASE.txt"));
         return true;
+    }
+
+    // ------------------------------------------------------------------ itch.io
+
+    /// <summary>The itch.io page the builds go to (user/game). Players install the game with the
+    /// itch app, which then downloads only what changed in each release, like Steam.</summary>
+    const string ItchTarget = "beardedgoblin/axisfall";
+
+    static readonly (string folder, string channel, string executable)[] ItchChannels =
+    {
+        ("Windows", "windows", $"{GameName}.exe"),
+        ("Linux", "linux", $"{GameName}.x86_64"),
+    };
+
+    [MenuItem("Tools/Gravity Portals/Build/Push Last Release to itch.io")]
+    static void PushLastReleaseToItch() => PushToItch(PlayerSettings.bundleVersion);
+
+    /// <summary>Uploads the Windows and Linux builds with butler (itch.io's uploader). Butler
+    /// only sends what changed since the last push, and the itch app updates players the same way.</summary>
+    static bool PushToItch(string version)
+    {
+        string butler = FindButler();
+        if (butler == null)
+        {
+            Debug.LogError("[itch] butler not found. Install the itch app (it brings butler along) or put butler on your PATH.");
+            return false;
+        }
+
+        bool ok = true;
+        try
+        {
+            for (int i = 0; i < ItchChannels.Length && ok; i++)
+            {
+                var (folder, channel, executable) = ItchChannels[i];
+                string dir = Path.GetFullPath(Path.Combine(OutputRoot, folder));
+                if (!File.Exists(Path.Combine(dir, executable)))
+                {
+                    Debug.LogError($"[itch] No {folder} build in {dir}. Run Release first.");
+                    ok = false;
+                    break;
+                }
+                File.WriteAllText(Path.Combine(dir, "VERSION.txt"), $"{GameName} v{version}\n");
+                // Tells the itch app which file starts the game (there are other .exe files in a Unity build).
+                File.WriteAllText(Path.Combine(dir, ".itch.toml"),
+                    $"[[actions]]\nname = \"play\"\npath = \"{executable}\"\n");
+
+                string args = $"push \"{dir}\" {ItchTarget}:{channel} --userversion {version} " +
+                              "--ignore \"*DoNotShip*\" --ignore \"*DontShip*\"";
+                ok = RunButler(butler, args, $"Uploading {folder} v{version} to itch.io", (float)i / ItchChannels.Length);
+            }
+        }
+        finally
+        {
+            EditorUtility.ClearProgressBar();
+        }
+
+        if (ok) Debug.Log($"[itch] v{version} pushed to https://{ItchTarget.Split('/')[0]}.itch.io/{ItchTarget.Split('/')[1]} (players get it through the itch app).");
+        else Debug.LogError("[itch] Upload failed (see above). If butler says you're not logged in, run `butler login` once. " +
+                            "Retry with Tools > Gravity Portals > Build > Push Last Release to itch.io.");
+        return ok;
+    }
+
+    /// <summary>butler from the itch app (the version it currently uses), else from PATH.</summary>
+    static string FindButler()
+    {
+        string broth = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "itch", "broth", "butler");
+        string exe = Application.platform == RuntimePlatform.WindowsEditor ? "butler.exe" : "butler";
+        try
+        {
+            string chosen = Path.Combine(broth, ".chosen-version");
+            if (File.Exists(chosen))
+            {
+                string path = Path.Combine(broth, "versions", File.ReadAllText(chosen).Trim(), exe);
+                if (File.Exists(path)) return path;
+            }
+            string versions = Path.Combine(broth, "versions");
+            if (Directory.Exists(versions))
+            {
+                string newest = Directory.GetDirectories(versions)
+                    .Select(d => Path.Combine(d, exe)).Where(File.Exists)
+                    .OrderByDescending(p => File.GetLastWriteTimeUtc(p)).FirstOrDefault();
+                if (newest != null) return newest;
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[itch] Couldn't look in the itch app's folder: {e.Message}");
+        }
+
+        foreach (string dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+        {
+            try
+            {
+                string path = Path.Combine(dir.Trim(), exe);
+                if (File.Exists(path)) return path;
+            }
+            catch (ArgumentException) { } // malformed PATH entry
+        }
+        return null;
+    }
+
+    static bool RunButler(string butler, string args, string title, float progress)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo(butler, args)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        var output = new System.Text.StringBuilder();
+        using (var p = new System.Diagnostics.Process { StartInfo = psi })
+        {
+            p.OutputDataReceived += (_, e) => { if (e.Data != null) lock (output) output.AppendLine(e.Data); };
+            p.ErrorDataReceived += (_, e) => { if (e.Data != null) lock (output) output.AppendLine(e.Data); };
+            p.Start();
+            p.BeginOutputReadLine();
+            p.BeginErrorReadLine();
+            var started = DateTime.Now;
+            while (!p.WaitForExit(250))
+            {
+                if (!Application.isBatchMode)
+                    EditorUtility.DisplayProgressBar("Release", $"{title}... ({(DateTime.Now - started).TotalSeconds:0}s)", progress);
+                if ((DateTime.Now - started).TotalMinutes > 30)
+                {
+                    try { p.Kill(); } catch { }
+                    Debug.LogError("[itch] butler took over 30 minutes; stopped it.");
+                    return false;
+                }
+            }
+            p.WaitForExit(); // flush the output readers
+            string log;
+            lock (output) log = output.ToString();
+            if (p.ExitCode == 0)
+            {
+                Debug.Log($"[itch] {title}: done.\n{log}");
+                return true;
+            }
+            Debug.LogError($"[itch] {title}: butler exited with code {p.ExitCode}.\n{log}");
+            return false;
+        }
     }
 
     /// <summary>The last few commit subjects, if this project is a git repository.</summary>
@@ -321,7 +467,7 @@ public static class GravityPortalsBuild
     {
         string script = server
             ? "#!/bin/sh\n" +
-              "# Dedicated server. Usage: ./run-server.sh [-map GravityArena|TriGravityAtrium] [-port 7777]\n" +
+              "# Dedicated server. Usage: ./run-server.sh [-map TriGravityAtrium|EndlessPavilion] [-port 7777]\n" +
               "cd \"$(dirname \"$0\")\"\n" +
               $"chmod +x \"./{executable}\"\n" +
               $"exec \"./{executable}\" -batchmode -nographics -server -logFile - \"$@\"\n"

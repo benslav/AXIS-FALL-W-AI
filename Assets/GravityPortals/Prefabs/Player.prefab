@@ -110,12 +110,17 @@ MonoBehaviour:
   sprintSpeed: 11
   groundAcceleration: 70
   airAcceleration: 20
-  jumpSpeed: 7.5
+  jumpSpeed: 9
   maxSlopeAngle: 50
   maxFallSpeed: 45
   gravityStrength: 22
   cameraEaseRate: 6
   cameraEaseMinSpeed: 150
+  grappleRange: 45
+  grappleReelSpeed: 5
+  grappleMinLength: 3
+  grappleSwingAcceleration: 12
+  grappleMaxSpeed: 38
   recoilRecovery: 9
   coyoteTime: 0.12
   warningDistance: 4

@@ -32,10 +32,15 @@ Every map scene is built by a script in `Assets/GravityPortals/Editor` (Tools > 
 Each has an `EditorPrefs` version key; bumping its `Version` const makes it rebuild once on the next compile
 (which overwrites the scene). Edit the builder, not the scene.
 
-- `GravityArenaBuilder` (also shared helpers: `BuildScene`, `Block`, `Make`, `Link`, materials, prefabs)
+- `GravityArenaBuilder`: shared helpers only (`BuildScene`, `Block`, `Make`, `Link`, materials, prefabs); the Gravity Arena map itself was removed
 - `TriGravityAtriumBuilder` (small = 3 gravity families; Large = 6 families, families 3-5 mirror 0-2 through the
   hall centre via `Pt`/`Dir`; mirror doors bridge the two halves)
-- `EndlessPavilionBuilder` (wrap-around walls: `Portal.worldWrap` + runtime `WrapAroundCopies`)
+- `EndlessPavilionBuilder` (wrap-around walls: `Portal.worldWrap` + `WrapAroundCopies`; layout from `PavilionLayout` with a
+  fixed seed, `LayoutSeed`)
+- `ShiftingPavilionBuilder` (same generator, new layout every match: `ShiftingPavilion` builds it at runtime from
+  `LobbyState.MapSeed`, re-rolled on Back to lobby). `PavilionLayout` is pure data and deterministic per seed, so it
+  can be checked outside Unity (compile it against `UnityEngine.CoreModule.dll` in a net8 console app; avoid
+  engine-only calls like `Bounds.Contains` in the checker)
 - `PortalTestLabBuilder` (24 test rooms; signs show expected landings computed with `GravityAfterPass`)
 - `MainMenuBuilder` (menu/lobby scene, `LobbyState` prefab, session prefab list)
 
@@ -61,5 +66,7 @@ checks have caught real bugs (two disconnected portal rings, chain drops, clippe
   `Assets/UniversalRenderPipelineGlobalSettings.asset`, `ProjectSettings/*BurstAot*.json`. Commit `.meta` files with
   their assets. Only commit/push when the user asks.
 - **Releases**: Tools > Gravity Portals > Release bumps `PlayerSettings.bundleVersion`, builds Windows + Linux (Mono),
+  pushes them to itch.io (`beardedgoblin/axisfall`, channels windows/linux) with the itch app's butler (players update
+  through the itch app), and also
   zips them and copies them to `G:\My Drive\AXIS-FALL Builds` (Google Drive for desktop), which the user shares with
   a friend. Players on different versions are refused with a message.

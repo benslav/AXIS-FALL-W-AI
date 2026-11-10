@@ -11,76 +11,19 @@ using UnityEngine;
 using UnityEngine.Rendering;
 
 /// <summary>
-/// Builds the gravity-portal test arena as a new scene.
-/// Runs once automatically after first compile; rebuild any time from
-/// Tools > Gravity Portals > Build Arena Scene (overwrites the arena scene).
+/// Shared map-building helpers used by every map builder: scene setup (prefabs, networking,
+/// camera), blocks, portals, materials and spawn points. (Named after the original Gravity
+/// Arena map, which has since been removed.)
 /// </summary>
-[InitializeOnLoad]
 public static class GravityArenaBuilder
 {
     const string Root = "Assets/GravityPortals";
-    const string ScenePath = Root + "/Scenes/GravityArena.unity";
     const string MaterialFolder = Root + "/Materials";
     const string PrefabFolder = Root + "/Prefabs";
-    const string AutoRunKey = "ClaudeTest.GravityArenaBuilder.AutoRan";
-    const string NetworkVersionKey = "ClaudeTest.GravityArenaBuilder.NetworkedVersion";
-    const int NetworkedVersion = 4; // 1 = multiplayer, 2 = combat, 3 = polish (portal views), 4 = portal layout for carry-through gravity
-
-    // Arena interior: x and z in [-20, 20], y in [0, 16].
-    const float HalfSize = 20f;
-    const float Height = 16f;
-    const float Wall = 1f;
-
-    static readonly Color Cyan = new Color(0f, 0.85f, 1f);
-    static readonly Color Magenta = new Color(1f, 0.2f, 0.85f);
-    static readonly Color Green = new Color(0.3f, 1f, 0.35f);
-    static readonly Color Yellow = new Color(1f, 0.85f, 0.1f);
-    static readonly Color Orange = new Color(1f, 0.45f, 0.05f);
-    static readonly Color Red = new Color(1f, 0.15f, 0.2f);
 
     static Material portalMat, portalViewMat;
     static Transform geometryRoot, portalRoot, propRoot, lightRoot;
     static int nextPortalId;
-
-    static GravityArenaBuilder()
-    {
-        // Build once on first compile, and rebuild once when the arena gains a new
-        // version (v1 = multiplayer), so the scene picks up the networked setup.
-        bool firstRun = !EditorPrefs.GetBool(AutoRunKey, false);
-        bool outdated = EditorPrefs.GetInt(NetworkVersionKey, 0) < NetworkedVersion;
-        if (!firstRun && !outdated) return;
-        EditorPrefs.SetBool(AutoRunKey, true);
-        EditorPrefs.SetInt(NetworkVersionKey, NetworkedVersion);
-        EditorApplication.delayCall += () =>
-        {
-            if (firstRun && !outdated && File.Exists(ScenePath)) return;
-            Build();
-        };
-    }
-
-    [MenuItem("Tools/Gravity Portals/Build Arena Scene")]
-    public static void Build()
-    {
-        BuildScene(ScenePath, () =>
-        {
-            var grid = GridTexture();
-            var floorMat = LitMaterial("Floor", new Color(0.42f, 0.42f, 0.44f), grid, new Vector2(21, 21));
-            var ceilingMat = LitMaterial("Ceiling", new Color(0.30f, 0.34f, 0.46f), grid, new Vector2(21, 21));
-            var westMat = LitMaterial("WallWest", new Color(0.26f, 0.42f, 0.42f), grid, new Vector2(20, 8));
-            var eastMat = LitMaterial("WallEast", new Color(0.40f, 0.30f, 0.46f), grid, new Vector2(20, 8));
-            var northMat = LitMaterial("WallNorth", new Color(0.46f, 0.36f, 0.28f), grid, new Vector2(20, 8));
-            var southMat = LitMaterial("WallSouth", new Color(0.30f, 0.42f, 0.30f), grid, new Vector2(20, 8));
-            var structureMat = LitMaterial("Structure", new Color(0.78f, 0.80f, 0.84f), grid, new Vector2(3, 3));
-            var darkMat = LitMaterial("StructureDark", new Color(0.16f, 0.17f, 0.20f), null, Vector2.one);
-            var accentMat = EmissiveMaterial("Accent", new Color(0.2f, 0.9f, 1f) * 2.2f);
-
-            BuildLighting();
-            BuildShell(floorMat, ceilingMat, westMat, eastMat, northMat, southMat, accentMat);
-            BuildStructures(structureMat, darkMat, out var rampA, out var rampB);
-            BuildPortals(rampA, rampB);
-            BuildSpawnPoints();
-        }, new Vector3(0, 13, -19), new Vector3(0, 3, 0));
-    }
 
     /// <summary>
     /// Shared scene setup for every map: makes a fresh scene, runs <paramref name="layout"/>
@@ -131,6 +74,8 @@ public static class GravityArenaBuilder
 
     internal static Transform GeometryRoot => geometryRoot;
     internal static Transform LightRoot => lightRoot;
+    internal static Material PortalMaterial => portalMat;
+    internal static Material PortalViewMaterialAsset => portalViewMat;
 
     internal static void AddSpawnPoint(string name, Vector3 position, Quaternion rotation)
     {
@@ -149,128 +94,6 @@ public static class GravityArenaBuilder
         go.transform.SetParent(propRoot, false);
         go.transform.SetPositionAndRotation(position, rotation);
         go.AddComponent<PropSpawnPoint>();
-    }
-
-    // ------------------------------------------------------------------ layout
-
-    static void BuildShell(Material floor, Material ceiling, Material west, Material east,
-        Material north, Material south, Material accent)
-    {
-        float span = HalfSize * 2f;
-        Block("Floor", new Vector3(0, -Wall / 2, 0), new Vector3(span + 2 * Wall, Wall, span + 2 * Wall), floor);
-        Block("Ceiling", new Vector3(0, Height + Wall / 2, 0), new Vector3(span + 2 * Wall, Wall, span + 2 * Wall), ceiling);
-        Block("Wall West", new Vector3(-HalfSize - Wall / 2, Height / 2, 0), new Vector3(Wall, Height, span), west);
-        Block("Wall East", new Vector3(HalfSize + Wall / 2, Height / 2, 0), new Vector3(Wall, Height, span), east);
-        Block("Wall North", new Vector3(0, Height / 2, HalfSize + Wall / 2), new Vector3(span, Height, Wall), north);
-        Block("Wall South", new Vector3(0, Height / 2, -HalfSize - Wall / 2), new Vector3(span, Height, Wall), south);
-
-        // Glowing trim along every edge of the room: makes "which way is the floor" readable
-        // from any orientation. No colliders, so it never trips anyone up.
-        float e = 0.12f;
-        for (int sx = -1; sx <= 1; sx += 2)
-        {
-            Trim(new Vector3(sx * (HalfSize - e / 2), e / 2, 0), new Vector3(e, e, span), accent);
-            Trim(new Vector3(sx * (HalfSize - e / 2), Height - e / 2, 0), new Vector3(e, e, span), accent);
-            Trim(new Vector3(0, e / 2, sx * (HalfSize - e / 2)), new Vector3(span, e, e), accent);
-            Trim(new Vector3(0, Height - e / 2, sx * (HalfSize - e / 2)), new Vector3(span, e, e), accent);
-            for (int sz = -1; sz <= 1; sz += 2)
-                Trim(new Vector3(sx * (HalfSize - e / 2), Height / 2, sz * (HalfSize - e / 2)), new Vector3(e, Height, e), accent);
-        }
-    }
-
-    static void BuildStructures(Material mat, Material dark, out Pose rampA, out Pose rampB)
-    {
-        // Central tower: its east face is walkable through the yellow portal.
-        Block("Tower", new Vector3(0, 4, 0), new Vector3(6, 8, 6), mat);
-
-        // Two raised platforms, each with a ramp.
-        Block("Platform SW", new Vector3(-12, 4.5f, -12), new Vector3(8, 1, 8), mat);
-        Block("Platform SW Pillar", new Vector3(-12, 2, -12), new Vector3(1.5f, 4, 1.5f), dark);
-        Block("Platform NE", new Vector3(12, 4.5f, 12), new Vector3(8, 1, 8), mat);
-        Block("Platform NE Pillar", new Vector3(12, 2, 12), new Vector3(1.5f, 4, 1.5f), dark);
-        rampA = Ramp("Ramp NE", new Vector3(12, 0, -2), new Vector3(12, 5, 8), 4f, mat);
-        rampB = Ramp("Ramp SW", new Vector3(4, 0, -12), new Vector3(-8, 5, -12), 4f, mat);
-
-        // Catwalk high on the north side: a hidden route for wall walkers.
-        Block("Catwalk North", new Vector3(0, 9.75f, 14), new Vector3(24, 0.5f, 3), dark);
-
-        // Floor cover.
-        Block("Cover 1", new Vector3(-14, 0.75f, 4), new Vector3(2, 1.5f, 4), dark);
-        Block("Cover 2", new Vector3(-5, 0.75f, 12), new Vector3(4, 1.5f, 2), dark);
-        Block("Cover 3", new Vector3(16, 0.75f, -8), new Vector3(2, 1.5f, 3), dark);
-
-        // Cover hanging from the ceiling, for fights up there.
-        Block("Ceiling Block 1", new Vector3(-8, Height - 1.5f, 8), new Vector3(6, 3, 6), dark);
-        Block("Ceiling Block 2", new Vector3(10, Height - 1f, -10), new Vector3(4, 2, 8), dark);
-
-        // Wall cover.
-        Block("West Wall Ledge", new Vector3(-HalfSize + 1, 6, -8), new Vector3(2, 3, 4), dark);
-        Block("East Wall Ledge", new Vector3(HalfSize - 1, 12, 4), new Vector3(2, 4, 3), dark);
-    }
-
-    static void BuildPortals(Pose rampA, Pose rampB)
-    {
-        // Your fall direction carries through a portal, so dropping into one lands you on the
-        // surface the OTHER portal faces. A pair between surfaces A and B therefore takes A's
-        // walkers to the surface opposite B, and B's walkers to the surface opposite A.
-        // These six pairs give every surface (floor, ceiling, four walls) two ways out, and
-        // every flight path across the room is clear of the tower, platforms and catwalk.
-        var up = Vector3.up;
-        var square = new Vector2(3f, 3f);
-        var door = new Vector2(2.5f, 3f);
-
-        // Cyan: SW platform top (floor -> south wall) <-> north wall (north wall -> ceiling).
-        Link(Make("Cyan A (platform)", new Vector3(-12, 5, -12), up, Vector3.forward, square, Cyan),
-             Make("Cyan B (north wall)", new Vector3(6, 6, HalfSize), Vector3.back, up, square, Cyan));
-
-        // Magenta: ceiling (ceiling -> north wall) <-> south wall (south wall -> floor).
-        Link(Make("Magenta A (ceiling)", new Vector3(-8, Height, -2), Vector3.down, Vector3.forward, square, Magenta),
-             Make("Magenta B (south wall)", new Vector3(-6, 8, -HalfSize), Vector3.forward, up, square, Magenta));
-
-        // Green: NE ramp (floor -> east wall) <-> west wall (west wall -> ceiling).
-        Vector3 rampNormal = rampA.rotation * Vector3.up;
-        Vector3 rampUp = rampA.rotation * Vector3.forward;
-        Link(Make("Green A (ramp)", rampA.position, rampNormal, rampUp, door, Green),
-             Make("Green B (west wall)", new Vector3(-HalfSize, 8, 4), Vector3.right, up, square, Green));
-
-        // Red: ceiling (ceiling -> west wall) <-> east wall (east wall -> floor).
-        Link(Make("Red A (ceiling)", new Vector3(6, Height, 8), Vector3.down, Vector3.forward, square, Red),
-             Make("Red B (east wall)", new Vector3(HalfSize, 12, -14), Vector3.left, up, square, Red));
-
-        // Orange: west wall (west wall -> south wall) <-> north wall (north wall -> east wall).
-        Link(Make("Orange A (west wall)", new Vector3(-HalfSize, 8, -15), Vector3.right, up, square, Orange),
-             Make("Orange B (north wall)", new Vector3(-10, 8, HalfSize), Vector3.back, up, square, Orange));
-
-        // Yellow: south wall (south wall -> west wall) <-> east wall (east wall -> north wall).
-        Link(Make("Yellow A (south wall)", new Vector3(10, 8, -HalfSize), Vector3.forward, up, square, Yellow),
-             Make("Yellow B (east wall)", new Vector3(HalfSize, 9, -8), Vector3.left, up, square, Yellow));
-    }
-
-    static void BuildSpawnPoints()
-    {
-        var root = new GameObject("Spawn Points").transform;
-        (Vector3 pos, float yaw)[] spawns =
-        {
-            (new Vector3(6, 0.95f, -17), 0f), (new Vector3(-16, 0.95f, 0), 90f),
-            (new Vector3(17, 0.95f, 2), -90f), (new Vector3(0, 0.95f, 17), 180f),
-            (new Vector3(-17, 0.95f, -17), 45f), (new Vector3(16, 0.95f, 16), -135f),
-        };
-        for (int i = 0; i < spawns.Length; i++)
-        {
-            var go = new GameObject($"Spawn {i + 1}");
-            go.transform.SetParent(root, false);
-            go.transform.SetPositionAndRotation(spawns[i].pos, Quaternion.Euler(0, spawns[i].yaw, 0));
-            go.AddComponent<SpawnPoint>();
-        }
-
-        Vector3[] crates = { new Vector3(-2, 0.4f, -9), new Vector3(2, 0.4f, -9), new Vector3(0, 0.4f, -10.5f) };
-        for (int i = 0; i < crates.Length; i++)
-        {
-            var go = new GameObject($"Crate Spawn {i + 1}");
-            go.transform.SetParent(propRoot, false);
-            go.transform.position = crates[i];
-            go.AddComponent<PropSpawnPoint>();
-        }
     }
 
     static GameObject CratePrefab(Material crateMat)
@@ -414,40 +237,6 @@ public static class GravityArenaBuilder
         return asset;
     }
 
-    static void BuildLighting()
-    {
-        RenderSettings.skybox = null;
-        RenderSettings.ambientMode = AmbientMode.Flat;
-        RenderSettings.ambientLight = new Color(0.32f, 0.34f, 0.40f);
-
-        // The arena is a closed box, so the directional light casts no shadows
-        // (otherwise the ceiling would shadow everything).
-        var sun = new GameObject("Key Light").AddComponent<Light>();
-        sun.transform.SetParent(lightRoot, false);
-        sun.type = LightType.Directional;
-        sun.intensity = 0.8f;
-        sun.shadows = LightShadows.None;
-        sun.transform.rotation = Quaternion.Euler(55, -35, 0);
-
-        Vector3[] spots =
-        {
-            new Vector3(-12, 12, -12), new Vector3(12, 12, 12), new Vector3(-12, 4, 12),
-            new Vector3(12, 4, -12), new Vector3(0, 13, 0), new Vector3(0, 3, -14),
-        };
-        Color[] tints = { Cyan, Magenta, Green, Orange, Color.white, Yellow };
-        for (int i = 0; i < spots.Length; i++)
-        {
-            var l = new GameObject($"Point Light {i + 1}").AddComponent<Light>();
-            l.transform.SetParent(lightRoot, false);
-            l.transform.position = spots[i];
-            l.type = LightType.Point;
-            l.range = 22f;
-            l.intensity = 3f;
-            l.color = Color.Lerp(tints[i], Color.white, 0.55f);
-            l.shadows = LightShadows.None;
-        }
-    }
-
     // ------------------------------------------------------------------ helpers
 
     internal static GameObject Block(string name, Vector3 center, Vector3 size, Material mat, Quaternion? rotation = null)
@@ -467,19 +256,6 @@ public static class GravityArenaBuilder
         var go = Block("Trim", center, size, mat);
         Object.DestroyImmediate(go.GetComponent<Collider>());
         go.GetComponent<Renderer>().shadowCastingMode = ShadowCastingMode.Off;
-    }
-
-    /// <summary>A sloped slab whose top surface runs from bottom to top. Returns the
-    /// pose of the middle of the top surface (up = surface normal, forward = uphill).</summary>
-    static Pose Ramp(string name, Vector3 bottom, Vector3 top, float width, Material mat)
-    {
-        const float thickness = 0.5f;
-        Vector3 dir = top - bottom;
-        var rot = Quaternion.LookRotation(dir, Vector3.up);
-        Vector3 mid = (bottom + top) * 0.5f;
-        Vector3 normal = rot * Vector3.up;
-        Block(name, mid - normal * thickness * 0.5f, new Vector3(width, thickness, dir.magnitude), mat, rot);
-        return new Pose(mid, rot);
     }
 
     internal static Portal Make(string name, Vector3 position, Vector3 normal, Vector3 upHint, Vector2 size, Color color)
@@ -506,7 +282,7 @@ public static class GravityArenaBuilder
         b.linkedPortal = a;
     }
 
-    static void EnsureFolder(string parent, string child)
+    internal static void EnsureFolder(string parent, string child)
     {
         if (!AssetDatabase.IsValidFolder($"{parent}/{child}"))
             AssetDatabase.CreateFolder(parent, child);

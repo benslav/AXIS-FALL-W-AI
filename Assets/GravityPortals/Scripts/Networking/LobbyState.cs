@@ -33,12 +33,25 @@ namespace GravityPortals
         NetworkList<LobbyMember> members;
         public NetworkList<LobbyMember> Members => members;
 
+        // Seed for maps that generate a new layout each match (the Shifting Pavilion). Rolled
+        // while everyone is in the lobby, so it has reached every player long before a map loads.
+        readonly NetworkVariable<int> mapSeed = new NetworkVariable<int>(
+            0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+        public int MapSeed => mapSeed.Value;
+
+        /// <summary>Server: pick a new seed for the next match.</summary>
+        public void RollMapSeed()
+        {
+            if (IsServer) mapSeed.Value = UnityEngine.Random.Range(1, int.MaxValue);
+        }
+
         void Awake() => members = new NetworkList<LobbyMember>();
 
         public override void OnNetworkSpawn()
         {
             Instance = this;
             if (!IsServer) return;
+            RollMapSeed();
             foreach (var id in NetworkManager.ConnectedClientsIds) AddMember(id);
             NetworkManager.OnClientConnectedCallback += AddMember;
             NetworkManager.OnClientDisconnectCallback += RemoveMember;

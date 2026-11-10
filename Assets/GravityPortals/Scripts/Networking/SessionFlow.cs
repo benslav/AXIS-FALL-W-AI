@@ -105,6 +105,7 @@ namespace GravityPortals
         public void BackToLobby()
         {
             if (!manager.IsServer || MapList.InMenu) return;
+            if (LobbyState.Instance != null) LobbyState.Instance.RollMapSeed(); // next Shifting Pavilion is a new layout
             manager.SceneManager.LoadScene(MapList.MenuScene, LoadSceneMode.Single);
         }
 

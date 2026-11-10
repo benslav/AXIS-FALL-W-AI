@@ -83,6 +83,13 @@ namespace GravityPortals
         readonly NetworkVariable<PlayerNetState> state = new NetworkVariable<PlayerNetState>(
             default, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
 
+        // The grappling rope, so other players can see it (the movement itself goes through
+        // the normal validated state).
+        readonly NetworkVariable<bool> grappling = new NetworkVariable<bool>(
+            false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
+        readonly NetworkVariable<Vector3> grappleAnchor = new NetworkVariable<Vector3>(
+            default, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
+
         GravityPlayerController controller;
 
         // Owner side
@@ -382,7 +389,16 @@ namespace GravityPortals
 
         void Update()
         {
-            if (!IsSpawned || IsOwner || snapshots.Count == 0) return;
+            if (!IsSpawned) return;
+            if (IsOwner)
+            {
+                if (controller.IsGrappling && grappleAnchor.Value != controller.GrappleAnchor)
+                    grappleAnchor.Value = controller.GrappleAnchor;
+                if (grappling.Value != controller.IsGrappling) grappling.Value = controller.IsGrappling;
+                return;
+            }
+            controller.SetRemoteGrapple(grappling.Value, grappleAnchor.Value);
+            if (snapshots.Count == 0) return;
 
             double renderTime = Time.timeAsDouble - interpolationDelay;
             PlayerNetState a = snapshots[0].State, b = a;

@@ -16,7 +16,7 @@ namespace GravityPortals
     ///   -server | -host | -client     start that mode right away (batch mode defaults to -server)
     ///   -ip &lt;address&gt;               address to join (client) — default 127.0.0.1
     ///   -port &lt;number&gt;              UDP port — default 7777
-    ///   -map &lt;name&gt;                 map to load first, e.g. "GravityArena" or "atrium"
+    ///   -map &lt;name&gt;                 map to load first, e.g. "TriGravityAtrium" or "atrium"
     ///   -relay                        with -host: host online through Unity Relay (join code goes to the log)
     ///   -joincode &lt;code&gt;            join an online (Relay) host by its code
     /// </summary>
