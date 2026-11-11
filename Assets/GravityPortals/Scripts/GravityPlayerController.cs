@@ -146,10 +146,11 @@ namespace GravityPortals
         float ropeLength;
         float grappleReadyTime;
 
-        /// <summary>Set by the weapon: &gt; 0 zooms the camera to this field of view (scoped).</summary>
+        /// <summary>Set by the weapon while aiming: &gt; 0 zooms the camera to this field of view.</summary>
         public float ScopeFov { get; set; }
-        /// <summary>Set by the weapon: right mouse scopes, so the grapple is on Q only.</summary>
-        public bool RightMouseScopes { get; set; }
+        /// <summary>Set by the weapon while aiming down sights: slower, no sprinting, finer mouse.</summary>
+        public bool Aiming { get; set; }
+        float currentFov = -1f; // eased toward the target field of view
 
         /// <summary>True while the hook is attached (on every machine, for drawing the rope).</summary>
         public bool IsGrappling => grappling;
@@ -263,7 +264,7 @@ namespace GravityPortals
 
             if (looking)
             {
-                float zoom = ScopeFov > 0f ? ScopeFov / baseFov : 1f; // finer aim while scoped
+                float zoom = currentFov > 0f ? Mathf.Min(1f, currentFov / baseFov) : 1f; // finer aim while zoomed in
                 float mx = Input.GetAxisRaw("Mouse X") * mouseSensitivity * zoom;
                 float my = Input.GetAxisRaw("Mouse Y") * mouseSensitivity * zoom;
                 // Yaw turns around the player's own up, not the world's.
@@ -280,9 +281,9 @@ namespace GravityPortals
             crouchHeld = alive && (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.C));
 
             // Grappling hook: right mouse fires it, hold to hang on, let go to fly off.
-            // Grappling hook: Q (always) or right mouse (unless the weapon in hand uses it to scope).
-            bool grappleDown = Input.GetKeyDown(KeyCode.Q) || (!RightMouseScopes && Input.GetMouseButtonDown(1));
-            bool grappleHold = Input.GetKey(KeyCode.Q) || (!RightMouseScopes && Input.GetMouseButton(1));
+            // Grappling hook: hold F (right mouse aims down sights).
+            bool grappleDown = Input.GetKeyDown(KeyCode.F);
+            bool grappleHold = Input.GetKey(KeyCode.F);
             if (alive && looking && grappleDown) TryGrapple();
             if (grappling && (!alive || !grappleHold)) ReleaseGrapple();
 
@@ -387,7 +388,9 @@ namespace GravityPortals
             Quaternion look = AimRotation;
             SeeThroughPortal(ref eye, ref look);
             viewCamera.transform.SetPositionAndRotation(eye, look);
-            viewCamera.fieldOfView = ScopeFov > 0f ? ScopeFov : baseFov + fovKick;
+            float targetFov = ScopeFov > 0f ? ScopeFov : baseFov + fovKick;
+            currentFov = currentFov < 0f ? targetFov : Mathf.Lerp(currentFov, targetFov, 1f - Mathf.Exp(-22f * Time.deltaTime));
+            viewCamera.fieldOfView = currentFov;
         }
 
         /// <summary>The body goes through a portal when its center crosses, but the camera
@@ -465,7 +468,7 @@ namespace GravityPortals
             Vector3 forward = Vector3.ProjectOnPlane(bodyRotation * Vector3.forward, refUp).normalized;
             Vector3 right = Vector3.ProjectOnPlane(bodyRotation * Vector3.right, refUp).normalized;
             Vector2 input = Vector2.ClampMagnitude(moveInput, 1f);
-            float speed = crouching && grounded ? crouchSpeed : sprinting ? sprintSpeed : moveSpeed;
+            float speed = crouching && grounded ? crouchSpeed : Aiming ? moveSpeed * 0.75f : sprinting ? sprintSpeed : moveSpeed;
             Vector3 wish = (forward * input.y + right * input.x) * speed;
 
             if (sliding && !hop)
@@ -1000,7 +1003,7 @@ namespace GravityPortals
             GUI.Label(new Rect(12, 10, 520, 22),
                 $"Gravity: {gravity}   Speed: {Body.linearVelocity.magnitude:0.0}   {(grounded ? "Grounded" : "Airborne")}");
             if (Cursor.lockState != CursorLockMode.Locked)
-                GUI.Label(new Rect(12, 32, 1600, 22), "Click to play. WASD move, Shift sprint, Space jump, Mouse fire, Right mouse or Q grapple (hold), Ctrl crouch/slide (jump while sliding to launch), R reload, 1/2/3 or wheel switch weapon (3 = sniper, right mouse scopes), Tab scores, K respawn, Esc release mouse.");
+                GUI.Label(new Rect(12, 32, 1600, 22), "Click to play. WASD move, Shift sprint, Space jump, Mouse fire, Right mouse aim, F grapple (hold), Ctrl crouch/slide (jump while sliding to launch), R reload, 1/2/3 or wheel switch weapon (3 = sniper), Tab scores, K respawn, Esc release mouse.");
             if (TestMap.Active)
                 GUI.Label(new Rect(12, 54, 400, 22), "Test map: H = back to the start");
 

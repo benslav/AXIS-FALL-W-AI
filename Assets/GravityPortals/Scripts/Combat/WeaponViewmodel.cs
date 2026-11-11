@@ -11,6 +11,15 @@ namespace GravityPortals
     public class WeaponViewmodel : MonoBehaviour
     {
         static readonly Vector3 HipPosition = new Vector3(0.2f, -0.19f, 0.38f);
+        // Aiming down sights: centred, with each gun's sight (its top) on the middle of the screen.
+        static readonly Vector3[] AimPositions =
+        {
+            new Vector3(0f, -0.083f, 0.3f),   // Pulse Rifle: rear sight block tops out at 0.08
+            new Vector3(0f, -0.1f, 0.32f),    // Plasma Launcher: glowing sight bulb on top
+            new Vector3(0f, -0.11f, 0.3f),    // Rail Sniper (hidden behind the scope overlay anyway)
+        };
+        bool aiming;
+        float aim; // 0 = hip, 1 = sights
         const float SwitchTime = 0.35f;
 
         GravityPlayerController controller;
@@ -179,6 +188,9 @@ namespace GravityPortals
         /// <summary>Hides the gun (looking down a scope).</summary>
         public void SetHidden(bool hidden) => pivot.gameObject.SetActive(!hidden);
 
+        /// <summary>Raise the gun to the sights (or lower it back to the hip).</summary>
+        public void SetAiming(bool on) => aiming = on;
+
         public void Flash(Color color)
         {
             flash.transform.position = MuzzlePosition;
@@ -217,8 +229,12 @@ namespace GravityPortals
             float bobAmount = Mathf.Clamp01(speed / 7f);
             Vector3 bob = new Vector3(Mathf.Cos(bobPhase) * 0.009f, Mathf.Abs(Mathf.Sin(bobPhase)) * 0.011f, 0f) * bobAmount;
 
-            Vector3 pos = HipPosition + new Vector3(sway.x, sway.y, 0f) + bob + new Vector3(0f, 0f, -0.07f * kick);
-            Vector3 euler = new Vector3(-7f * kick, sway.x * 120f, -sway.x * 80f);
+            // Aiming: slide to the sights, and calm the sway and bob right down.
+            aim = Mathf.MoveTowards(aim, aiming ? 1f : 0f, dt * 7f);
+            float settle = 1f - 0.85f * aim;
+            Vector3 basePos = Vector3.Lerp(HipPosition, AimPositions[Mathf.Clamp(current, 0, AimPositions.Length - 1)], Mathf.SmoothStep(0f, 1f, aim));
+            Vector3 pos = basePos + (new Vector3(sway.x, sway.y, 0f) + bob) * settle + new Vector3(0f, 0f, -0.07f * kick * (1f - 0.5f * aim));
+            Vector3 euler = new Vector3(-7f * kick * (1f - 0.6f * aim), sway.x * 120f * settle, -sway.x * 80f * settle);
 
             float reload = (Time.time - reloadStart) / reloadDuration;
             if (reload >= 0f && reload <= 1f)

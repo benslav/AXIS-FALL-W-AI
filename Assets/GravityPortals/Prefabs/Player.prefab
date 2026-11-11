@@ -125,10 +125,12 @@ MonoBehaviour:
   slideMaxBoostedSpeed: 20
   slideFriction: 15
   slideEndSpeed: 4.5
-  bulletJumpSpeed: 15
-  bulletJumpLift: 9.5
+  bulletJumpSpeed: 18
+  bulletJumpLift: 12
   grappleRange: 45
-  grappleReelSpeed: 5
+  grappleYankSpeed: 7
+  grapplePullAcceleration: 48
+  grapplePullSpeed: 26
   grappleMinLength: 3
   grappleSwingAcceleration: 12
   grappleMaxSpeed: 38

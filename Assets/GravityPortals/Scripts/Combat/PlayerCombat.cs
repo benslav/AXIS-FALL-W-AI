@@ -201,8 +201,7 @@ namespace GravityPortals
             if (Input.GetKeyDown(KeyCode.R)) StartReload();
             if (Input.GetKeyDown(KeyCode.K)) SelfDestructRpc();
 
-            // Scope: with a scoped weapon out, right mouse zooms (the grapple is on Q then).
-            controller.RightMouseScopes = def.ScopeFov > 0f;
+            // Aim down sights (right mouse): iron sights, or the full scope on the sniper.
             SetScoped(locked && def.ScopeFov > 0f && Input.GetMouseButton(1) && Time.time >= switchEnd && reloadEnd < 0f);
             if (Input.GetKeyDown(KeyCode.H) && TestMap.Active) net.RequestReturnRpc(); // test maps: back to start
 
@@ -237,9 +236,15 @@ namespace GravityPortals
         {
             if (on == scoped) return;
             scoped = on;
-            controller.ScopeFov = on ? WeaponDefs.Get(current).ScopeFov : 0f;
-            if (viewmodel != null) viewmodel.SetHidden(on);
-            Sfx.Play2D(SoundBank.Click, 0.35f, on ? 1.5f : 1.2f);
+            var def = WeaponDefs.Get(current);
+            controller.ScopeFov = on ? def.ScopeFov : 0f;
+            controller.Aiming = on;
+            if (viewmodel != null)
+            {
+                viewmodel.SetHidden(on && def.Scope);   // looking down a real scope
+                viewmodel.SetAiming(on && !def.Scope);  // iron sights: the gun comes up to the centre
+            }
+            if (def.Scope) Sfx.Play2D(SoundBank.Click, 0.35f, on ? 1.5f : 1.2f);
         }
 
         /// <summary>Current spread in degrees: steadier standing still on the ground, and a
@@ -273,7 +278,7 @@ namespace GravityPortals
             Vector3 muzzle = viewmodel != null ? viewmodel.MuzzlePosition : origin;
             if (viewmodel != null) { viewmodel.Kick(); viewmodel.Flash(def.Accent); }
             controller.AddRecoil(def.RecoilUp, Random.Range(-1f, 1f) * def.RecoilSide);
-            Sfx.Play2D(ShotSound(def), def.Kind == WeaponKind.Hitscan ? (def.ScopeFov > 0f ? 0.8f : 0.45f) : 0.75f,
+            Sfx.Play2D(ShotSound(def), def.Kind == WeaponKind.Hitscan ? (def.Scope ? 0.8f : 0.45f) : 0.75f,
                 def.ShotPitch * Random.Range(0.95f, 1.05f));
 
             if (def.Kind == WeaponKind.Hitscan)
@@ -598,7 +603,7 @@ namespace GravityPortals
         void ShotFxRpc(ShotPath path)
         {
             var def = WeaponDefs.Get(path.Weapon);
-            if (path.Count >= 1) Sfx.Play3D(ShotSound(def), path.Points[0], 0.9f, def.ShotPitch * Random.Range(0.95f, 1.05f), def.ScopeFov > 0f ? 120f : 60f);
+            if (path.Count >= 1) Sfx.Play3D(ShotSound(def), path.Points[0], 0.9f, def.ShotPitch * Random.Range(0.95f, 1.05f), def.Scope ? 120f : 60f);
             if (path.Count <= 1)
             {
                 if (path.Count == 1) CombatFx.Flash(path.Points[0], def.Accent, 0.3f);
@@ -731,7 +736,13 @@ namespace GravityPortals
             }
             else
             {
-                if (scoped)
+                if (scoped && !def.Scope)
+                {
+                    // Iron sights: just a small dot where the shot goes.
+                    GUI.color = new Color(1f, 1f, 1f, 0.8f);
+                    GUI.DrawTexture(new Rect(cx - 1.5f, cy - 1.5f, 3f, 3f), white);
+                }
+                else if (scoped)
                 {
                     // Scope: black all round a square sight with fine cross-hairs and a centre dot.
                     float size = h * 0.92f, x0 = cx - size * 0.5f, y0 = cy - size * 0.5f;
