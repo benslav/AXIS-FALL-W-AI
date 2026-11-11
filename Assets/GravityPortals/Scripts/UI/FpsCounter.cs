@@ -54,14 +54,22 @@ namespace GravityPortals
         {
             if (!show || fps <= 0f) return;
             if (style == null)
-                style = new GUIStyle(GUI.skin.label) { fontSize = 14, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+                style = new GUIStyle(GUI.skin.label)
+                {
+                    fontSize = 14, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter,
+                    wordWrap = false, clipping = TextClipping.Overflow, padding = new RectOffset(0, 0, 0, 0),
+                };
 
-            var rect = new Rect(Screen.width * 0.5f - 110f, 6f, 220f, 22f);
-            GUI.color = new Color(0f, 0f, 0f, 0.45f);
+            // Worst frame in the last half second shows stutters an average hides.
+            var text = new GUIContent($"{fps:0} FPS   {ms:0.0} ms   (worst {worstMs:0} ms)");
+            // Size the box to the text (plus padding), so nothing is ever cut off.
+            Vector2 size = style.CalcSize(text);
+            float w = size.x + 24f, h = size.y + 8f;
+            var rect = new Rect(Mathf.Round(Screen.width * 0.5f - w * 0.5f), 6f, w, h);
+            GUI.color = new Color(0f, 0f, 0f, 0.5f);
             GUI.DrawTexture(rect, Texture2D.whiteTexture);
             GUI.color = fps >= 60f ? new Color(0.45f, 1f, 0.55f) : fps >= 30f ? new Color(1f, 0.85f, 0.3f) : new Color(1f, 0.4f, 0.35f);
-            // Worst frame in the last half second shows stutters an average hides.
-            GUI.Label(rect, $"{fps:0} FPS   {ms:0.0} ms   (worst {worstMs:0} ms)", style);
+            GUI.Label(rect, text, style);
             GUI.color = Color.white;
         }
     }

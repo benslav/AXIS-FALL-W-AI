@@ -15,27 +15,19 @@ namespace GravityPortals
     /// doesn't block the view. The result goes to a render texture that the portal
     /// surface samples in screen space, so it lines up seamlessly with the real world.
     ///
-    /// Only portals actually in view (and in front of the camera) render, at a reduced
-    /// resolution, to keep the cost down.
+    /// Keeping it cheap, so every portal in view can show its view:
+    /// - only portals in view, in range and not hidden behind walls render;
+    /// - each renders only the rectangle of the screen its portal covers (the projection is
+    ///   narrowed to it, so culling skips everything outside), into a texture just that size,
+    ///   at lower resolution when it's small or far away;
+    /// - portal cameras skip shadows, depth/colour copies and post-processing, and small
+    ///   portals skip anti-aliasing.
     /// </summary>
     [RequireComponent(typeof(Portal))]
     public class PortalView : MonoBehaviour
     {
-        public static float resolutionScale = 0.75f;
+        public static float resolutionScale = 0.7f; // for small or distant portals
         public static float maxDistance = 80f;
-        /// <summary>Most portal views rendered in one frame; the biggest on screen win, the rest
-        /// show the plain portal surface (as portals beyond maxDistance do).</summary>
-        public static int maxViews = 8;
-        /// <summary>A view's texture is freed after this long out of sight (seconds).</summary>
-        const float FreeAfter = 3f;
-
-        static readonly List<PortalView> candidates = new List<PortalView>();
-        bool wanted;            // in view this frame (before the budget)
-        bool rendering;         // got a camera this frame
-        float coverage;         // share of the screen the portal covers (1 = up close)
-        Rect screenRect;        // the part of the screen it covers (viewport coordinates)
-        float lastVisibleTime = -100f;
-        float pendingScale = 1f;
 
         static readonly List<PortalView> views = new List<PortalView>();
         static readonly Plane[] frustum = new Plane[6];
@@ -45,17 +37,22 @@ namespace GravityPortals
         static readonly int ThickId = Shader.PropertyToID("_Thick");
         static readonly int ClarityId = Shader.PropertyToID("_Clarity");
         static readonly int ZTestId = Shader.PropertyToID("_ZTest");
-        bool drawOnTop;
-        float currentScale = -1f;
-        bool targetIsHdr;
+        static readonly int ViewRectId = Shader.PropertyToID("_ViewRect");
 
         Portal portal;
         Camera viewCamera;
-        RenderTexture target;
+        RenderTexture target;   // temporary texture, re-fetched each frame at the size needed
         Material material;
         Renderer surface;
         float thickness = 0.02f;
         int surfaceLayer = -1;
+        bool drawOnTop;
+
+        bool wanted;            // should render this frame
+        float coverage;         // share of the screen the portal covers (1 = up close)
+        Rect screenRect;        // the part of the screen it covers (viewport coordinates)
+        float distance;
+        float lastSeenTime = -100f; // last time a line of sight to the portal was clear
 
         public static int LayerPortalSurface => LayerMask.NameToLayer("PortalSurface");
         public static int LayerLocalPlayer => LayerMask.NameToLayer("LocalPlayer");
@@ -73,10 +70,22 @@ namespace GravityPortals
             surfaceLayer = LayerPortalSurface;
             // Don't draw portal surfaces inside portal views (no recursion).
             if (surfaceLayer >= 0) viewCamera.cullingMask = ~(1 << surfaceLayer);
+
+            var data = viewCamera.GetUniversalAdditionalCameraData();
             // No post-processing here: the main camera applies it to the portal surface along
             // with everything else, so the view through a portal looks exactly like the real
             // thing once you step through (no colour or brightness pop).
-            viewCamera.GetUniversalAdditionalCameraData().renderPostProcessing = false;
+            data.renderPostProcessing = false;
+            data.antialiasing = AntialiasingMode.None;
+            // Nothing a portal view needs: skip the work.
+            data.renderShadows = false;
+            data.requiresDepthOption = CameraOverrideOption.Off;
+            data.requiresColorOption = CameraOverrideOption.Off;
+            data.volumeLayerMask = 0;
+            data.stopNaN = false;
+            data.dithering = false;
+            viewCamera.useOcclusionCulling = false;
+            material.SetVector(ViewRectId, new Vector4(0f, 0f, 1f, 1f));
         }
 
         void OnEnable()
@@ -89,66 +98,64 @@ namespace GravityPortals
             }
         }
 
-        void OnDisable() => views.Remove(this);
-
-        void OnDestroy()
+        void OnDisable()
         {
-            if (target != null)
-            {
-                target.Release();
-                Destroy(target);
-            }
+            views.Remove(this);
+            ReleaseTarget();
         }
+
+        void OnDestroy() => ReleaseTarget();
 
         static void BeforeRender(ScriptableRenderContext context, List<Camera> cameras)
         {
             var main = Camera.main;
             if (main == null) return;
             GeometryUtility.CalculateFrustumPlanes(main, frustum);
-            candidates.Clear();
             for (int i = 0; i < views.Count; i++)
             {
                 var v = views[i];
                 v.UpdateView(main);
-                if (v.wanted) candidates.Add(v);
-            }
-
-            // Budget: only the portals that matter most on screen get a camera. Ones already
-            // rendering get a head start, so two similar portals don't swap back and forth.
-            candidates.Sort((a, b) => b.Priority.CompareTo(a.Priority));
-            for (int i = 0; i < candidates.Count; i++)
-            {
-                bool on = i < maxViews;
-                if (on) candidates[i].EnsureTarget(main, candidates[i].pendingScale);
-                candidates[i].SetRendering(on);
-            }
-            for (int i = 0; i < views.Count; i++)
-            {
-                var v = views[i];
-                if (!v.wanted) v.SetRendering(false);
-                if (!v.rendering && v.target != null && Time.time - v.lastVisibleTime > FreeAfter) v.FreeTarget();
+                v.SetRendering(v.wanted, main);
             }
         }
 
-        float Priority => coverage * (rendering ? 1.5f : 1f);
-
-        void SetRendering(bool on)
+        void SetRendering(bool on, Camera main)
         {
-            rendering = on;
+            // Last frame's texture goes back to the pool; a fresh one sized for this frame
+            // (often the very same texture) is taken below.
+            ReleaseTarget();
+            if (on)
+            {
+                // Smaller texture for small or far portals; full detail up close and for
+                // anything big on screen. Sizes are rounded up so the same pooled texture
+                // keeps getting reused as you move.
+                float scale = distance < 14f || coverage > 0.12f ? 1f : resolutionScale;
+                int w = RoundUp(main.pixelWidth * screenRect.width * scale);
+                int h = RoundUp(main.pixelHeight * screenRect.height * scale);
+                var format = main.allowHDR ? RenderTextureFormat.DefaultHDR : RenderTextureFormat.Default;
+                target = RenderTexture.GetTemporary(w, h, 24, format);
+                target.name = $"{portal.name} view";
+                viewCamera.targetTexture = target;
+                // Anti-aliasing only where it shows.
+                viewCamera.allowMSAA = main.allowMSAA && coverage > 0.04f;
+                material.SetTexture(MainTexId, target);
+                material.SetVector(ViewRectId, new Vector4(screenRect.x, screenRect.y, screenRect.width, screenRect.height));
+            }
+
             // A camera switched on now first renders next frame, so until then show the plain
-            // surface rather than an empty or stale texture.
+            // surface rather than an empty texture.
             bool renderedBefore = viewCamera.enabled;
             viewCamera.enabled = on;
-            material.SetFloat(HasViewId, on && renderedBefore && target != null ? 1f : 0f);
-            if (on) lastVisibleTime = Time.time;
+            material.SetFloat(HasViewId, on && renderedBefore ? 1f : 0f);
         }
 
-        void FreeTarget()
+        static int RoundUp(float pixels) => Mathf.Max(32, Mathf.CeilToInt(pixels / 32f) * 32);
+
+        void ReleaseTarget()
         {
-            viewCamera.targetTexture = null;
-            material.SetTexture(MainTexId, null);
-            target.Release();
-            Destroy(target);
+            if (target == null) return;
+            if (viewCamera != null) viewCamera.targetTexture = null;
+            RenderTexture.ReleaseTemporary(target);
             target = null;
         }
 
@@ -182,16 +189,15 @@ namespace GravityPortals
             if (viewCamera == null || material == null) return;
             var linked = portal.linkedPortal;
             Vector3 toCamera = main.transform.position - transform.position;
-            float distance = toCamera.magnitude;
+            distance = toCamera.magnitude;
             // Nearby portals keep rendering even when just out of view, so turning around or
             // stepping through never shows a stale frame (cameras switch on a frame late).
             bool visible = linked != null
                 && Vector3.Dot(toCamera, portal.Normal) > -1f
                 && distance < maxDistance
-                && (distance < 6f || GeometryUtility.TestPlanesAABB(frustum, surface.bounds));
-
+                && (distance < 6f || (GeometryUtility.TestPlanesAABB(frustum, surface.bounds) && InSight(main)));
             wanted = visible;
-            if (visible) MeasureOnScreen(main, distance);
+            if (visible) MeasureOnScreen(main);
 
             // The last few centimetres before you cross: your camera can't draw anything closer
             // than its near clip distance, so the portal surface gets clipped a moment before
@@ -209,11 +215,6 @@ namespace GravityPortals
             // Clean-look portals are always a clear opening; energy-look ones clear up as you approach.
             material.SetFloat(ClarityId, portal.CleanLook ? 1f : Mathf.Clamp01((6f - distance) / 4f));
             if (!visible) return;
-
-            // Full resolution up close (or for doorways), cheaper further away. The hysteresis
-            // keeps it from reallocating the texture every frame at the boundary.
-            // (The texture itself is made only if this portal wins a camera; see BeforeRender.)
-            pendingScale = portal.doorway || distance < (currentScale >= 1f ? 14f : 12f) ? 1f : resolutionScale;
 
             // Same view, seen through the linked portal.
             Matrix4x4 transfer = Portal.TransferMatrix(portal, linked);
@@ -237,9 +238,9 @@ namespace GravityPortals
             viewCamera.aspect = main.aspect;
             viewCamera.clearFlags = main.clearFlags;
             viewCamera.allowHDR = main.allowHDR;
-            viewCamera.allowMSAA = main.allowMSAA;
             viewCamera.backgroundColor = main.backgroundColor;
             viewCamera.depth = main.depth - 1f;
+            viewCamera.rect = new Rect(0f, 0f, 1f, 1f); // the texture is exactly the portal's rectangle
 
             // Tilt the near plane onto the linked portal's surface, so nothing behind that surface
             // (the wall it's on, door posts, screens) can ever show in the view.
@@ -267,11 +268,10 @@ namespace GravityPortals
                     new Vector4(camNormal.x, camNormal.y, camNormal.z, -Vector3.Dot(camPoint, camNormal)));
             }
 
-            // Render only the part of the screen the portal covers: the projection is narrowed
-            // to that rectangle (so culling skips everything outside it) and drawn into the same
-            // pixels, so it still lines up exactly with the screen-space surface.
+            // Narrow the projection to the portal's rectangle of the screen, stretched over the
+            // whole texture. The surface shader maps screen positions into that rectangle, so it
+            // still lines up exactly; and culling skips everything outside it.
             Rect r = screenRect;
-            viewCamera.rect = r;
             if (r.width < 0.999f || r.height < 0.999f)
             {
                 float cx = (r.xMin + r.xMax) - 1f, cy = (r.yMin + r.yMax) - 1f; // centre in NDC
@@ -285,9 +285,30 @@ namespace GravityPortals
             viewCamera.projectionMatrix = projection;
         }
 
+        /// <summary>Is any part of the opening in clear sight of the camera? Five quick line
+        /// checks (centre and corners). A portal that's just been in sight stays "in sight" a
+        /// moment longer, so it never pops in late as you come round a corner.</summary>
+        bool InSight(Camera main)
+        {
+            Vector3 from = main.transform.position;
+            float hx = portal.size.x * 0.42f, hy = portal.size.y * 0.42f;
+            for (int i = 0; i < 5; i++)
+            {
+                Vector3 local = i == 0 ? Vector3.zero : new Vector3(i % 2 == 0 ? -hx : hx, i < 3 ? -hy : hy, 0f);
+                Vector3 to = transform.TransformPoint(local) + portal.Normal * 0.05f;
+                if (!Physics.Linecast(from, to, out RaycastHit hit, ~0, QueryTriggerInteraction.Ignore)
+                    || hit.collider.attachedRigidbody != null) // players and crates don't hide a portal
+                {
+                    lastSeenTime = Time.time;
+                    return true;
+                }
+            }
+            return Time.time - lastSeenTime < 0.3f;
+        }
+
         /// <summary>How much of the screen this portal covers, and where. Up close (or when a
         /// corner is behind the camera) it's treated as the whole screen.</summary>
-        void MeasureOnScreen(Camera main, float distance)
+        void MeasureOnScreen(Camera main)
         {
             screenRect = new Rect(0f, 0f, 1f, 1f);
             coverage = 1f;
@@ -306,37 +327,11 @@ namespace GravityPortals
             const float margin = 0.02f;
             xMin = Mathf.Clamp01(xMin - margin); yMin = Mathf.Clamp01(yMin - margin);
             xMax = Mathf.Clamp01(xMax + margin); yMax = Mathf.Clamp01(yMax + margin);
-            if (xMax - xMin < 0.005f || yMax - yMin < 0.005f) { coverage = 0f; screenRect = new Rect(xMin, yMin, 0.005f, 0.005f); return; }
+            xMax = Mathf.Max(xMax, xMin + 0.01f); yMax = Mathf.Max(yMax, yMin + 0.01f);
+            if (xMax > 1f) { xMin -= xMax - 1f; xMax = 1f; }
+            if (yMax > 1f) { yMin -= yMax - 1f; yMax = 1f; }
             screenRect = Rect.MinMaxRect(xMin, yMin, xMax, yMax);
             coverage = screenRect.width * screenRect.height;
-        }
-
-        void EnsureTarget(Camera main, float scale)
-        {
-            currentScale = scale;
-            int w = Mathf.Max(64, Mathf.RoundToInt(main.pixelWidth * scale));
-            int h = Mathf.Max(64, Mathf.RoundToInt(main.pixelHeight * scale));
-            // Match the main camera's colour range so the view through the portal and the view
-            // after stepping through are indistinguishable. (Anti-aliasing comes from the camera
-            // itself, allowMSAA above; URP resolves it before writing into this texture.)
-            bool hdr = main.allowHDR;
-            // Compare with what we asked for last time: Unity reports the concrete format it
-            // picked (e.g. ARGBHalf), never "DefaultHDR", so comparing target.format would
-            // recreate the texture every frame and the portal would only ever show black.
-            if (target != null && target.width == w && target.height == h && targetIsHdr == hdr) return;
-
-            if (target != null)
-            {
-                viewCamera.targetTexture = null;
-                target.Release();
-                Destroy(target);
-            }
-            var format = hdr ? RenderTextureFormat.DefaultHDR : RenderTextureFormat.Default;
-            target = new RenderTexture(w, h, 24, format) { name = $"{portal.name} view" };
-            target.Create();
-            targetIsHdr = hdr;
-            viewCamera.targetTexture = target;
-            material.SetTexture(MainTexId, target);
         }
     }
 }

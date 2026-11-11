@@ -11,6 +11,7 @@ Shader "GravityPortals/PortalView"
         _Thick ("Thick (passing through)", Float) = 0
         _FlipY ("Flip View Y", Float) = 0
         _Clarity ("Clarity (1 = clean opening, no effects)", Float) = 0
+        _ViewRect ("View Rect (screen area the view texture covers: x, y, width, height)", Vector) = (0, 0, 1, 1)
         [Enum(UnityEngine.Rendering.CompareFunction)] _ZTest ("Z Test (Always while your eye is right at the opening)", Float) = 4
     }
 
@@ -41,6 +42,7 @@ Shader "GravityPortals/PortalView"
                 float _Thick;
                 float _FlipY;
                 float _Clarity;
+                float4 _ViewRect;
             CBUFFER_END
 
             struct Attributes
@@ -91,7 +93,9 @@ Shader "GravityPortals/PortalView"
 
                 // A faint ripple across the view sells it as an energy membrane.
                 float2 ripple = float2(sin(t * 3.0 + i.uv.y * 40.0), cos(t * 2.6 + i.uv.x * 40.0)) * 0.0015 * effects;
-                half3 view = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, suv + ripple).rgb;
+                // The view texture covers only this portal's rectangle of the screen.
+                float2 vuv = (suv + ripple - _ViewRect.xy) / max(_ViewRect.zw, 1e-4);
+                half3 view = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, vuv).rgb;
 
                 half3 energy = _Color.rgb * (0.25 + 0.5 * swirl);
                 half3 col = lerp(energy, view + _Color.rgb * 0.05 * swirl * effects, saturate(_HasView));
