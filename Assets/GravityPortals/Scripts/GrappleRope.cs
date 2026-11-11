@@ -26,8 +26,8 @@ namespace GravityPortals
             line = go.AddComponent<LineRenderer>();
             line.useWorldSpace = true;
             line.positionCount = 2;
-            line.startWidth = 0.035f;
-            line.endWidth = 0.025f;
+            line.startWidth = 0.06f;
+            line.endWidth = 0.04f;
             line.numCapVertices = 2;
             var shader = Shader.Find("Universal Render Pipeline/Unlit") ?? Shader.Find("Unlit/Color");
             line.material = new Material(shader);

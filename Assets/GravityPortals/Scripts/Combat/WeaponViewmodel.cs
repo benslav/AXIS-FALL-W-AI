@@ -83,6 +83,19 @@ namespace GravityPortals
             Box(launcher, light, new Vector3(0, -0.1f, -0.04f), new Vector3(0.04f, 0.1f, 0.05f), Quaternion.Euler(-10, 0, 0));
             muzzles[WeaponDefs.Launcher] = Marker(launcher, new Vector3(0, 0.02f, 0.43f));
 
+            // Rail Sniper: long barrel, scope on top, glowing rails.
+            var sniper = Group("Rail Sniper", WeaponDefs.Sniper);
+            Color violet = WeaponDefs.Get(WeaponDefs.Sniper).Accent;
+            Box(sniper, metal, new Vector3(0, 0, 0.02f), new Vector3(0.065f, 0.085f, 0.4f));
+            Box(sniper, light, new Vector3(0, -0.015f, -0.25f), new Vector3(0.055f, 0.1f, 0.18f));
+            Box(sniper, metal, new Vector3(0, -0.09f, -0.02f), new Vector3(0.04f, 0.11f, 0.06f), Quaternion.Euler(12, 0, 0));
+            Part(sniper, PrimitiveType.Cylinder, metal, new Vector3(0, 0.01f, 0.42f), new Vector3(0.022f, 0.22f, 0.022f), Quaternion.Euler(90, 0, 0));
+            Part(sniper, PrimitiveType.Cylinder, light, new Vector3(0, 0.085f, 0.0f), new Vector3(0.045f, 0.11f, 0.045f), Quaternion.Euler(90, 0, 0));
+            Glow(sniper, PrimitiveType.Cylinder, new Vector3(0, 0.085f, -0.11f), new Vector3(0.035f, 0.004f, 0.035f), Quaternion.Euler(90, 0, 0), violet);
+            Glow(sniper, PrimitiveType.Cube, new Vector3(0.036f, 0.0f, 0.14f), new Vector3(0.008f, 0.012f, 0.3f), Quaternion.identity, violet);
+            Glow(sniper, PrimitiveType.Cube, new Vector3(-0.036f, 0.0f, 0.14f), new Vector3(0.008f, 0.012f, 0.3f), Quaternion.identity, violet);
+            muzzles[WeaponDefs.Sniper] = Marker(sniper, new Vector3(0, 0.01f, 0.65f));
+
             // Muzzle flash (moved to the active muzzle when it fires).
             var flashGo = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             flashGo.name = "MuzzleFlash";
@@ -161,7 +174,10 @@ namespace GravityPortals
             reloadStart = -10f;
         }
 
-        public void Kick() => kick = Mathf.Min(kick + (current == WeaponDefs.Launcher ? 1f : 0.45f), 1.4f);
+        public void Kick() => kick = Mathf.Min(kick + (current == WeaponDefs.Rifle ? 0.45f : 1f), 1.4f);
+
+        /// <summary>Hides the gun (looking down a scope).</summary>
+        public void SetHidden(bool hidden) => pivot.gameObject.SetActive(!hidden);
 
         public void Flash(Color color)
         {

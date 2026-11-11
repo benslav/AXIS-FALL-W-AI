@@ -180,12 +180,13 @@ namespace GravityPortals
         {
             if (!IsOwner || !IsSpawned) return;
             damageFlash = Mathf.MoveTowards(damageFlash, 0f, Time.deltaTime * 1.5f);
-            if (!alive.Value) return;
+            if (!alive.Value) { SetScoped(false); return; }
 
             bool locked = Cursor.lockState == CursorLockMode.Locked;
 
             if (Input.GetKeyDown(KeyCode.Alpha1)) SwitchTo(WeaponDefs.Rifle, false);
             if (Input.GetKeyDown(KeyCode.Alpha2)) SwitchTo(WeaponDefs.Launcher, false);
+            if (Input.GetKeyDown(KeyCode.Alpha3)) SwitchTo(WeaponDefs.Sniper, false);
             float wheel = Input.GetAxis("Mouse ScrollWheel");
             if (locked && Mathf.Abs(wheel) > 0.01f)
                 SwitchTo((current + (wheel > 0f ? 1 : WeaponDefs.All.Length - 1)) % WeaponDefs.All.Length, false);
@@ -199,9 +200,14 @@ namespace GravityPortals
             }
             if (Input.GetKeyDown(KeyCode.R)) StartReload();
             if (Input.GetKeyDown(KeyCode.K)) SelfDestructRpc();
+
+            // Scope: with a scoped weapon out, right mouse zooms (the grapple is on Q then).
+            controller.RightMouseScopes = def.ScopeFov > 0f;
+            SetScoped(locked && def.ScopeFov > 0f && Input.GetMouseButton(1) && Time.time >= switchEnd && reloadEnd < 0f);
             if (Input.GetKeyDown(KeyCode.H) && TestMap.Active) net.RequestReturnRpc(); // test maps: back to start
 
-            bool wantsFire = locked && (def.Automatic ? Input.GetButton("Fire1") : Input.GetButtonDown("Fire1"));
+            // Left mouse only (Unity's "Fire1" also fires on left Ctrl, which is crouch).
+            bool wantsFire = locked && (def.Automatic ? Input.GetMouseButton(0) : Input.GetMouseButtonDown(0));
             if (wantsFire && Time.time >= nextFireTime && Time.time >= switchEnd && reloadEnd < 0f)
             {
                 if (ammo[current] <= 0)
@@ -225,6 +231,26 @@ namespace GravityPortals
             if (!instant) Sfx.Play2D(SoundBank.Click, 0.5f, 0.7f);
         }
 
+        bool scoped;
+
+        void SetScoped(bool on)
+        {
+            if (on == scoped) return;
+            scoped = on;
+            controller.ScopeFov = on ? WeaponDefs.Get(current).ScopeFov : 0f;
+            if (viewmodel != null) viewmodel.SetHidden(on);
+            Sfx.Play2D(SoundBank.Click, 0.35f, on ? 1.5f : 1.2f);
+        }
+
+        /// <summary>Current spread in degrees: steadier standing still on the ground, and a
+        /// scoped weapon is far tighter when scoped.</summary>
+        float CurrentSpread(WeaponDef def)
+        {
+            bool steady = controller.IsGrounded && controller.Body.linearVelocity.magnitude < 1.5f;
+            if (scoped) return steady ? def.ScopedSpread : def.ScopedMovingSpread;
+            return steady ? def.Spread : def.MovingSpread;
+        }
+
         void StartReload()
         {
             var def = WeaponDefs.Get(current);
@@ -241,15 +267,14 @@ namespace GravityPortals
             nextFireTime = Time.time + def.FireInterval;
 
             Vector3 origin = controller.EyePosition;
-            bool steady = controller.IsGrounded && controller.Body.linearVelocity.magnitude < 1.5f;
-            float spread = steady ? def.Spread : def.MovingSpread;
-            Vector2 jitter = Random.insideUnitCircle * spread;
+            Vector2 jitter = Random.insideUnitCircle * CurrentSpread(def);
             Vector3 direction = controller.AimRotation * Quaternion.Euler(jitter.y, jitter.x, 0f) * Vector3.forward;
 
             Vector3 muzzle = viewmodel != null ? viewmodel.MuzzlePosition : origin;
             if (viewmodel != null) { viewmodel.Kick(); viewmodel.Flash(def.Accent); }
             controller.AddRecoil(def.RecoilUp, Random.Range(-1f, 1f) * def.RecoilSide);
-            Sfx.Play2D(ShotSound(def), def.Kind == WeaponKind.Hitscan ? 0.45f : 0.75f, Random.Range(0.95f, 1.05f));
+            Sfx.Play2D(ShotSound(def), def.Kind == WeaponKind.Hitscan ? (def.ScopeFov > 0f ? 0.8f : 0.45f) : 0.75f,
+                def.ShotPitch * Random.Range(0.95f, 1.05f));
 
             if (def.Kind == WeaponKind.Hitscan)
             {
@@ -450,6 +475,8 @@ namespace GravityPortals
             if (Time.time < protectedUntil) return;
 
             health.Value = Mathf.Max(0, health.Value - amount);
+            lastDamageTime = Time.time; // regen waits regenDelay after the latest hit
+            regenCarry = 0f;
             DamagedRpc(direction);
 
             bool killed = health.Value == 0;
@@ -470,9 +497,29 @@ namespace GravityPortals
         float lastHitTime = -100f;
         const float KnockOffCreditTime = 6f;
 
+        [Header("Health regen")]
+        [Tooltip("Seconds without taking damage before health starts coming back.")]
+        public float regenDelay = 5f;
+        [Tooltip("Health regained per second once regen starts.")]
+        public float regenRate = 20f;
+        float lastDamageTime = -100f;
+        float regenCarry; // fractions of a point between physics steps
+
         void FixedUpdate()
         {
             if (!IsServer || !IsSpawned || !alive.Value) return;
+
+            if (health.Value < MaxHealth && Time.time - lastDamageTime >= regenDelay)
+            {
+                regenCarry += regenRate * Time.fixedDeltaTime;
+                int gain = Mathf.FloorToInt(regenCarry);
+                if (gain > 0)
+                {
+                    regenCarry -= gain;
+                    health.Value = Mathf.Min(MaxHealth, health.Value + gain);
+                }
+            }
+
             var area = ArenaBounds.Current;
             if (area == null || area.Contains(net.AcceptedState.Position)) return;
             ServerFellIntoVoid();
@@ -551,7 +598,7 @@ namespace GravityPortals
         void ShotFxRpc(ShotPath path)
         {
             var def = WeaponDefs.Get(path.Weapon);
-            if (path.Count >= 1) Sfx.Play3D(ShotSound(def), path.Points[0], 0.9f, Random.Range(0.95f, 1.05f), 60f);
+            if (path.Count >= 1) Sfx.Play3D(ShotSound(def), path.Points[0], 0.9f, def.ShotPitch * Random.Range(0.95f, 1.05f), def.ScopeFov > 0f ? 120f : 60f);
             if (path.Count <= 1)
             {
                 if (path.Count == 1) CombatFx.Flash(path.Points[0], def.Accent, 0.3f);
@@ -629,7 +676,9 @@ namespace GravityPortals
                 Destroy(col);
                 gun.transform.SetParent(controller.headPivot, false);
                 gun.transform.localPosition = new Vector3(0.28f, -0.22f, 0.32f);
-                gun.transform.localScale = i == WeaponDefs.Rifle ? new Vector3(0.07f, 0.09f, 0.6f) : new Vector3(0.15f, 0.15f, 0.55f);
+                gun.transform.localScale = i == WeaponDefs.Rifle ? new Vector3(0.07f, 0.09f, 0.6f)
+                    : i == WeaponDefs.Sniper ? new Vector3(0.06f, 0.08f, 0.95f)
+                    : new Vector3(0.15f, 0.15f, 0.55f);
                 var r = gun.GetComponent<Renderer>();
                 r.sharedMaterial = CombatFx.Unlit;
                 CombatFx.SetColor(r, Color.Lerp(def.Accent, Color.black, 0.35f));
@@ -682,14 +731,34 @@ namespace GravityPortals
             }
             else
             {
-                // Crosshair opens up with spread.
-                bool steady = controller.IsGrounded && controller.Body.linearVelocity.magnitude < 1.5f;
-                float gap = 4f + (steady ? def.Spread : def.MovingSpread) * 6f;
-                GUI.color = new Color(1f, 1f, 1f, 0.9f);
-                GUI.DrawTexture(new Rect(cx - gap - 8, cy - 1, 8, 2), white);
-                GUI.DrawTexture(new Rect(cx + gap, cy - 1, 8, 2), white);
-                GUI.DrawTexture(new Rect(cx - 1, cy - gap - 8, 2, 8), white);
-                GUI.DrawTexture(new Rect(cx - 1, cy + gap, 2, 8), white);
+                if (scoped)
+                {
+                    // Scope: black all round a square sight with fine cross-hairs and a centre dot.
+                    float size = h * 0.92f, x0 = cx - size * 0.5f, y0 = cy - size * 0.5f;
+                    GUI.color = Color.black;
+                    GUI.DrawTexture(new Rect(0, 0, x0, h), white);
+                    GUI.DrawTexture(new Rect(x0 + size, 0, w - x0 - size, h), white);
+                    GUI.DrawTexture(new Rect(x0, 0, size, y0), white);
+                    GUI.DrawTexture(new Rect(x0, y0 + size, size, h - y0 - size), white);
+                    GUI.color = new Color(0f, 0f, 0f, 0.85f);
+                    GUI.DrawTexture(new Rect(x0, cy - 0.5f, size, 1f), white);
+                    GUI.DrawTexture(new Rect(cx - 0.5f, y0, 1f, size), white);
+                    GUI.DrawTexture(new Rect(x0, cy - 1.5f, size * 0.3f, 3f), white);
+                    GUI.DrawTexture(new Rect(x0 + size * 0.7f, cy - 1.5f, size * 0.3f, 3f), white);
+                    GUI.DrawTexture(new Rect(cx - 1.5f, y0 + size * 0.7f, 3f, size * 0.3f), white);
+                    GUI.color = def.Accent;
+                    GUI.DrawTexture(new Rect(cx - 1.5f, cy - 1.5f, 3f, 3f), white);
+                }
+                else
+                {
+                    // Crosshair opens up with spread.
+                    float gap = 4f + CurrentSpread(def) * 6f;
+                    GUI.color = new Color(1f, 1f, 1f, 0.9f);
+                    GUI.DrawTexture(new Rect(cx - gap - 8, cy - 1, 8, 2), white);
+                    GUI.DrawTexture(new Rect(cx + gap, cy - 1, 8, 2), white);
+                    GUI.DrawTexture(new Rect(cx - 1, cy - gap - 8, 2, 8), white);
+                    GUI.DrawTexture(new Rect(cx - 1, cy + gap, 2, 8), white);
+                }
 
                 float since = Time.time - hitMarkerTime;
                 if (since < 0.25f)

@@ -89,6 +89,9 @@ namespace GravityPortals
             false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
         readonly NetworkVariable<Vector3> grappleAnchor = new NetworkVariable<Vector3>(
             default, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
+        // Crouching: everyone shows the shorter body, and the server's hit checks use the shorter capsule.
+        readonly NetworkVariable<bool> crouched = new NetworkVariable<bool>(
+            false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
 
         GravityPlayerController controller;
 
@@ -395,9 +398,11 @@ namespace GravityPortals
                 if (controller.IsGrappling && grappleAnchor.Value != controller.GrappleAnchor)
                     grappleAnchor.Value = controller.GrappleAnchor;
                 if (grappling.Value != controller.IsGrappling) grappling.Value = controller.IsGrappling;
+                if (crouched.Value != controller.IsCrouching) crouched.Value = controller.IsCrouching;
                 return;
             }
             controller.SetRemoteGrapple(grappling.Value, grappleAnchor.Value);
+            controller.SetRemoteCrouch(crouched.Value);
             if (snapshots.Count == 0) return;
 
             double renderTime = Time.timeAsDouble - interpolationDelay;

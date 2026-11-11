@@ -35,6 +35,9 @@ namespace GravityPortals
         public float sprintSpeed = 11f;
         public float groundAcceleration = 70f;
         public float airAcceleration = 20f;
+        [Tooltip("Bunny hopping: jumping again on the frame you land skips ground friction, so speed carries on. " +
+                 "Strafing in the air builds speed up to this (m/s); faster momentum from portals or the grapple is kept, just not added to.")]
+        public float bhopSpeedCap = 20f;
         public float jumpSpeed = 9f;
         public float maxSlopeAngle = 50f;
         public float maxFallSpeed = 45f;
@@ -46,12 +49,36 @@ namespace GravityPortals
         [Tooltip("Slowest the camera eases (degrees/second), so the last few degrees don't drag on.")]
         public float cameraEaseMinSpeed = 150f;
 
+        [Header("Crouch and slide")]
+        [Tooltip("Capsule height while crouched (standing is the capsule's own height).")]
+        public float crouchHeight = 1.1f;
+        [Tooltip("Eye height above the crouched capsule's centre.")]
+        public float crouchEyeHeight = 0.4f;
+        public float crouchSpeed = 5f;
+        [Tooltip("Crouching on the ground at this speed or faster starts a slide (m/s).")]
+        public float slideStartSpeed = 8f;
+        [Tooltip("Speed added when a slide starts (m/s), up to slideMaxBoostedSpeed.")]
+        public float slideBoost = 3f;
+        public float slideMaxBoostedSpeed = 15f;
+        [Tooltip("How quickly a slide slows down on flat ground (m/s²). Downhill speeds you up.")]
+        public float slideFriction = 4.5f;
+        [Tooltip("A slide turns into a crouch-walk below this speed (m/s).")]
+        public float slideEndSpeed = 4.5f;
+        [Tooltip("Jumping out of a slide launches you where you're looking at this speed (m/s), like a bullet jump.")]
+        public float bulletJumpSpeed = 15f;
+        [Tooltip("Minimum upward speed of a bullet jump (m/s): at least a full jump's height on top of the forward launch, more when you aim up.")]
+        public float bulletJumpLift = 9.5f;
+
         [Header("Grappling hook")]
         [Tooltip("How far the hook reaches (m).")]
         public float grappleRange = 45f;
-        [Tooltip("How fast the rope reels in while you hang on (m/s).")]
-        public float grappleReelSpeed = 5f;
-        [Tooltip("The rope never reels shorter than this (m).")]
+        [Tooltip("Instant speed toward the anchor when the hook bites (m/s).")]
+        public float grappleYankSpeed = 7f;
+        [Tooltip("How hard the rope hauls you toward the anchor while you hold on (m/s²). Gravity is 22.")]
+        public float grapplePullAcceleration = 48f;
+        [Tooltip("The haul stops adding speed once you're closing on the anchor this fast (m/s).")]
+        public float grapplePullSpeed = 26f;
+        [Tooltip("The pull eases off this close to the anchor, so you hang there (m).")]
         public float grappleMinLength = 3f;
         [Tooltip("How hard WASD pumps your swing while hooked (m/s²).")]
         public float grappleSwingAcceleration = 12f;
@@ -73,6 +100,18 @@ namespace GravityPortals
         Vector3 groundNormal = Vector3.up;
         float noGroundUntil;
         float jumpBufferedUntil = -1f;
+        bool jumpHeld; // holding Space jumps again the moment you land (bunny hopping)
+
+        // Crouch / slide
+        bool crouchHeld, crouching, sliding;
+        float standHeight;            // the capsule's normal height
+        float eyeOffset;              // camera height above the capsule centre (eased)
+        float nextBulletJumpTime;
+        Transform bodyMesh;
+        float bodyMeshHeight;
+
+        public bool IsCrouching => crouching;
+        public bool IsSliding => sliding;
         Vector2 moveInput;
         bool sprinting;
 
@@ -107,6 +146,11 @@ namespace GravityPortals
         float ropeLength;
         float grappleReadyTime;
 
+        /// <summary>Set by the weapon: &gt; 0 zooms the camera to this field of view (scoped).</summary>
+        public float ScopeFov { get; set; }
+        /// <summary>Set by the weapon: right mouse scopes, so the grapple is on Q only.</summary>
+        public bool RightMouseScopes { get; set; }
+
         /// <summary>True while the hook is attached (on every machine, for drawing the rope).</summary>
         public bool IsGrappling => grappling;
         public Vector3 GrappleAnchor => grappleAnchor;
@@ -118,7 +162,7 @@ namespace GravityPortals
         public bool IsLocallyControlled { get; private set; } = true;
         public bool IsAlive => alive;
         /// <summary>Where shots come from: the eye.</summary>
-        public Vector3 EyePosition => transform.position + (bodyRotation * Vector3.up) * eyeHeight;
+        public Vector3 EyePosition => transform.position + (bodyRotation * Vector3.up) * (crouching ? crouchEyeHeight : eyeHeight);
         /// <summary>Where shots go: the view direction including recoil.</summary>
         public Quaternion AimRotation => bodyRotation * Quaternion.Euler(pitch - recoilPitch, recoilYaw, 0f);
         public float CapsuleHalfHeight => capsule.height * 0.5f;
@@ -135,6 +179,10 @@ namespace GravityPortals
             base.Awake();
             capsule = GetComponent<CapsuleCollider>();
             capsule.direction = 1;
+            standHeight = capsule.height;
+            eyeOffset = eyeHeight;
+            bodyMesh = transform.Find("BodyMesh");
+            if (bodyMesh != null) bodyMeshHeight = bodyMesh.localScale.y;
             capsule.sharedMaterial = new PhysicsMaterial("PlayerFrictionless")
             {
                 dynamicFriction = 0f,
@@ -215,8 +263,9 @@ namespace GravityPortals
 
             if (looking)
             {
-                float mx = Input.GetAxisRaw("Mouse X") * mouseSensitivity;
-                float my = Input.GetAxisRaw("Mouse Y") * mouseSensitivity;
+                float zoom = ScopeFov > 0f ? ScopeFov / baseFov : 1f; // finer aim while scoped
+                float mx = Input.GetAxisRaw("Mouse X") * mouseSensitivity * zoom;
+                float my = Input.GetAxisRaw("Mouse Y") * mouseSensitivity * zoom;
                 // Yaw turns around the player's own up, not the world's.
                 bodyRotation = Quaternion.AngleAxis(mx, bodyRotation * Vector3.up) * bodyRotation;
                 pitch = Mathf.Clamp(pitch - my, -89f, 89f);
@@ -227,10 +276,15 @@ namespace GravityPortals
             moveInput = alive ? new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical")) : Vector2.zero;
             sprinting = Input.GetKey(KeyCode.LeftShift);
             if (alive && Input.GetButtonDown("Jump")) jumpBufferedUntil = Time.time + 0.15f;
+            jumpHeld = alive && Input.GetButton("Jump");
+            crouchHeld = alive && (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.C));
 
             // Grappling hook: right mouse fires it, hold to hang on, let go to fly off.
-            if (alive && looking && Input.GetMouseButtonDown(1)) TryGrapple();
-            if (grappling && (!alive || !Input.GetMouseButton(1))) ReleaseGrapple();
+            // Grappling hook: Q (always) or right mouse (unless the weapon in hand uses it to scope).
+            bool grappleDown = Input.GetKeyDown(KeyCode.Q) || (!RightMouseScopes && Input.GetMouseButtonDown(1));
+            bool grappleHold = Input.GetKey(KeyCode.Q) || (!RightMouseScopes && Input.GetMouseButton(1));
+            if (alive && looking && grappleDown) TryGrapple();
+            if (grappling && (!alive || !grappleHold)) ReleaseGrapple();
 
             float settle = 1f - Mathf.Exp(-recoilRecovery * Time.deltaTime);
             recoilPitch = Mathf.Lerp(recoilPitch, 0f, settle);
@@ -328,11 +382,12 @@ namespace GravityPortals
             // On stairs the camera rides on the tread under you: it lags the smooth ramp, then
             // catches up quickly at each step edge, so climbing feels like steps.
             stairOffset = Mathf.Lerp(stairOffset, stairTarget, 1f - Mathf.Exp(-22f * Time.deltaTime));
-            Vector3 eye = RenderPosition + up * (eyeHeight - landDip + stairOffset);
+            eyeOffset = Mathf.Lerp(eyeOffset, crouching ? crouchEyeHeight : eyeHeight, 1f - Mathf.Exp(-24f * Time.deltaTime));
+            Vector3 eye = RenderPosition + up * (eyeOffset - landDip + stairOffset);
             Quaternion look = AimRotation;
             SeeThroughPortal(ref eye, ref look);
             viewCamera.transform.SetPositionAndRotation(eye, look);
-            viewCamera.fieldOfView = baseFov + fovKick;
+            viewCamera.fieldOfView = ScopeFov > 0f ? ScopeFov : baseFov + fovKick;
         }
 
         /// <summary>The body goes through a portal when its center crosses, but the camera
@@ -379,21 +434,52 @@ namespace GravityPortals
                 lastGroundedTime = Time.time;
                 jumpedSinceGrounded = false;
             }
+            bool justLanded = grounded && !wasGrounded;
             wasGrounded = grounded;
+            bool wantsJump = Time.time <= jumpBufferedUntil || jumpHeld;
+            // Bunny hop: jumping straight off a landing never touches ground friction.
+            bool hop = justLanded && wantsJump;
 
             Vector3 velocity = Body.linearVelocity;
             Vector3 refUp = grounded ? groundNormal : gravityUp;
             Vector3 vertical = Vector3.Project(velocity, refUp);
             Vector3 lateral = velocity - vertical;
 
+            // Crouch and slide. Crouching while moving fast on the ground (or landing fast with
+            // crouch held) starts a slide; letting go stands you up once there's room.
+            if (crouchHeld && !crouching)
+            {
+                if (SetCrouch(true) && grounded && lateral.magnitude >= slideStartSpeed) lateral = StartSlide(lateral);
+            }
+            else if (!crouchHeld && crouching)
+            {
+                SetCrouch(false); // stays crouched under a low ceiling
+            }
+            else if (crouching && justLanded && !sliding && lateral.magnitude >= slideStartSpeed)
+            {
+                lateral = StartSlide(lateral);
+            }
+            if (!grounded || !crouching) sliding = false;
+
             // WASD is relative to the body, flattened onto whatever we're standing on.
             Vector3 forward = Vector3.ProjectOnPlane(bodyRotation * Vector3.forward, refUp).normalized;
             Vector3 right = Vector3.ProjectOnPlane(bodyRotation * Vector3.right, refUp).normalized;
             Vector2 input = Vector2.ClampMagnitude(moveInput, 1f);
-            float speed = sprinting ? sprintSpeed : moveSpeed;
+            float speed = crouching && grounded ? crouchSpeed : sprinting ? sprintSpeed : moveSpeed;
             Vector3 wish = (forward * input.y + right * input.x) * speed;
 
-            if (grounded)
+            if (sliding && !hop)
+            {
+                // Low friction, downhill speeds you up, and you can steer a little.
+                stairs = null;
+                stairTarget = 0f;
+                lateral += Vector3.ProjectOnPlane(gravityDirection, groundNormal) * (gravityStrength * dt);
+                lateral = Vector3.MoveTowards(lateral, Vector3.zero, slideFriction * dt);
+                if (wish.sqrMagnitude > 0.01f)
+                    lateral = Vector3.RotateTowards(lateral, wish.normalized * lateral.magnitude, 1.2f * dt, 0f);
+                if (lateral.magnitude < slideEndSpeed) sliding = false; // now just crouch-walking
+            }
+            else if (grounded && !hop)
             {
                 lateral = Vector3.MoveTowards(lateral, wish, groundAcceleration * dt);
                 if (UpdateStairs(gravityUp))
@@ -416,11 +502,17 @@ namespace GravityPortals
                 stairTarget = 0f;
                 if (wish.sqrMagnitude > 0.01f)
                 {
-                    // Air control only adds speed up to the move speed and never brakes,
-                    // so momentum carried out of a portal is preserved.
+                    // Air control only adds speed up to the move speed along the direction you
+                    // press, and never brakes, so momentum carried out of a portal is preserved.
+                    // Pressing sideways to your motion (strafing while turning) still adds a
+                    // little each step, which is what builds speed when bunny hopping.
                     Vector3 wishDir = wish.normalized;
                     float current = Vector3.Dot(lateral, wishDir);
+                    float before = lateral.magnitude;
                     lateral += wishDir * Mathf.Clamp(speed - current, 0f, airAcceleration * dt);
+                    float after = lateral.magnitude;
+                    if (after > before && after > bhopSpeedCap)
+                        lateral *= Mathf.Max(before, bhopSpeedCap) / after; // gains stop at the cap
                 }
             }
 
@@ -429,7 +521,28 @@ namespace GravityPortals
             if (grounded && Vector3.Dot(vertical, groundNormal) > 0f) vertical = Vector3.zero;
 
             bool canJump = (grounded || Time.time - lastGroundedTime < coyoteTime) && !jumpedSinceGrounded;
-            if (canJump && Time.time <= jumpBufferedUntil)
+            if (canJump && wantsJump && sliding && Time.time >= nextBulletJumpTime)
+            {
+                // Bullet jump: out of a slide, launch where you're looking (keeping any extra
+                // speed you already had that way), always with some lift off the ground.
+                Vector3 aim = AimRotation * Vector3.forward;
+                Vector3 launch = aim * Mathf.Max(bulletJumpSpeed, Vector3.Dot(lateral, aim));
+                float lift = Vector3.Dot(launch, gravityUp);
+                if (lift < bulletJumpLift) launch += gravityUp * (bulletJumpLift - lift);
+                vertical = Vector3.Project(launch, refUp);
+                lateral = launch - vertical;
+                sliding = false;
+                grounded = false;
+                wasGrounded = false;
+                jumpedSinceGrounded = true;
+                noGroundUntil = Time.time + 0.2f;
+                jumpBufferedUntil = -1f;
+                nextBulletJumpTime = Time.time + 0.5f;
+                fovKick += 8f;
+                Sfx.Play2D(SoundBank.Jump, 0.55f, 0.7f);
+                Sfx.Play2D(SoundBank.PortalWhoosh, 0.25f, 1.6f);
+            }
+            else if (canJump && wantsJump)
             {
                 vertical = gravityUp * jumpSpeed;
                 grounded = false;
@@ -450,6 +563,109 @@ namespace GravityPortals
             lastFallSpeed = grounded ? 0f : Mathf.Max(0f, fallSpeed);
 
             Body.linearVelocity = velocity;
+        }
+
+        // ------------------------------------------------------------------ crouch and slide
+
+        Vector3 StartSlide(Vector3 lateral)
+        {
+            sliding = true;
+            float s = lateral.magnitude;
+            if (s < slideMaxBoostedSpeed) lateral *= Mathf.Min(s + slideBoost, slideMaxBoostedSpeed) / Mathf.Max(s, 0.01f);
+            fovKick += 4f;
+            Sfx.Play2D(SoundBank.Land, 0.35f, 0.6f);
+            return lateral;
+        }
+
+        /// <summary>Shrinks or restores the capsule. On the ground your feet stay put; in the
+        /// air crouching tucks your legs up (your head stays put). Standing up needs room above
+        /// (or below, in the air) and returns false if there isn't any. The camera doesn't jump:
+        /// it eases to the new eye height.</summary>
+        bool SetCrouch(bool on)
+        {
+            if (on == crouching) return true;
+            Vector3 up = bodyRotation * Vector3.up;
+            float drop = (standHeight - crouchHeight) * 0.5f;
+            Vector3 shift;
+            if (on)
+            {
+                shift = grounded ? -up * drop : up * drop;
+            }
+            else
+            {
+                Vector3 dir = grounded ? up : -up;
+                if (!HasRoom(dir, drop * 2f))
+                {
+                    if (grounded || !HasRoom(up, drop * 2f)) return false;
+                    dir = up; // in the air with the ground right below: stand up into the space above
+                }
+                shift = dir * drop;
+            }
+
+            crouching = on;
+            capsule.height = on ? crouchHeight : standHeight;
+            if (!on) sliding = false;
+            Body.position += shift;
+            transform.position = Body.position;
+            simPrevious += shift;
+            simCurrent += shift;
+            eyeOffset -= Vector3.Dot(shift, up); // keep the camera where it was; it eases from here
+            ApplyCrouchVisuals();
+            return true;
+        }
+
+        /// <summary>Is there room to grow the capsule by <paramref name="distance"/> along <paramref name="dir"/>?</summary>
+        bool HasRoom(Vector3 dir, float distance)
+        {
+            float radius = capsule.radius * 0.9f;
+            Vector3 origin = Body.position + dir * Mathf.Max(0f, capsule.height * 0.5f - capsule.radius);
+            int count = Physics.SphereCastNonAlloc(origin, radius, dir, hits, distance, ~0, QueryTriggerInteraction.Ignore);
+            for (int i = 0; i < count; i++)
+            {
+                var c = hits[i].collider;
+                if (IsOwnCollider(c) || IsHostIgnored(c)) continue;
+                if (c.attachedRigidbody != null && !c.attachedRigidbody.isKinematic) continue; // crates get pushed
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>Shorter body and lower head for anyone looking (others, or you in a portal).</summary>
+        void ApplyCrouchVisuals()
+        {
+            float scale = capsule.height / standHeight;
+            if (bodyMesh != null)
+            {
+                var s = bodyMesh.localScale;
+                s.y = bodyMeshHeight * scale;
+                bodyMesh.localScale = s;
+            }
+            if (headPivot != null)
+            {
+                var p = headPivot.localPosition;
+                p.y = crouching ? crouchEyeHeight : eyeHeight;
+                headPivot.localPosition = p;
+            }
+        }
+
+        /// <summary>Remote players: crouch the collider (the server's hit checks use it) and the
+        /// body. Their position already comes from the owner, so nothing moves.</summary>
+        public void SetRemoteCrouch(bool on)
+        {
+            if (IsLocallyControlled || on == crouching) return;
+            crouching = on;
+            capsule.height = on ? crouchHeight : standHeight;
+            ApplyCrouchVisuals();
+        }
+
+        /// <summary>Back to standing at once (respawn, death).</summary>
+        void ResetCrouch()
+        {
+            crouching = false;
+            sliding = false;
+            capsule.height = standHeight;
+            eyeOffset = eyeHeight;
+            ApplyCrouchVisuals();
         }
 
         // ------------------------------------------------------------------ grappling hook
@@ -498,7 +714,11 @@ namespace GravityPortals
             grappling = true;
             grappleAnchor = point;
             ropeLength = Mathf.Max(grappleMinLength, Vector3.Distance(Body.position, point));
-            Sfx.Play2D(SoundBank.Click, 0.6f, 0.55f);
+            // The hook bites: an instant yank toward it before the steady pull takes over.
+            AddVelocity((point - Body.position).normalized * grappleYankSpeed);
+            fovKick += 3f;
+            Sfx.Play2D(SoundBank.Click, 0.7f, 0.5f);
+            Sfx.Play2D(SoundBank.Land, 0.4f, 1.4f);
         }
 
         void ReleaseGrapple()
@@ -526,25 +746,28 @@ namespace GravityPortals
             if (dist < 0.05f) return velocity;
             Vector3 dir = toAnchor / dist;
 
-            // Reel in, but never leave more than a little slack (so swinging back out doesn't
-            // end in a sudden yank).
-            ropeLength = Mathf.Max(grappleMinLength, Mathf.Min(ropeLength, dist + 0.5f) - grappleReelSpeed * dt);
+            // The rope only ever gets shorter: you can swing in closer, never drift back out.
+            ropeLength = Mathf.Max(grappleMinLength, Mathf.Min(ropeLength, dist));
+
+            // A strong, steady haul toward the anchor (well past gravity), up to the pull speed.
+            // It eases off over the last few metres so you hang at the anchor instead of
+            // bouncing on it. Sideways speed is left alone, so you arc round as you're pulled in.
+            float ease = Mathf.Clamp01((dist - grappleMinLength) / 3f);
+            float inward = Vector3.Dot(velocity, dir);
+            if (inward < grapplePullSpeed)
+                velocity += dir * Mathf.Min(grapplePullAcceleration * ease * dt, grapplePullSpeed - inward);
 
             if (!grounded && wish.sqrMagnitude > 0.01f)
                 velocity += Vector3.ProjectOnPlane(wish.normalized, dir) * (grappleSwingAcceleration * dt);
 
-            if (dist > ropeLength)
+            // Taut rope: never moving away from the anchor. This is what turns falling into a swing.
+            inward = Vector3.Dot(velocity, dir);
+            if (dist >= ropeLength - 0.05f && inward < 0f) velocity -= dir * inward;
+
+            if (grounded && Vector3.Dot(dir, groundNormal) > 0.2f)
             {
-                // Taut: no moving away from the anchor, and an easy pull back to the rope's
-                // length. Sideways speed is kept, which is what makes it swing.
-                float inward = Vector3.Dot(velocity, dir);
-                float wanted = Mathf.Min((dist - ropeLength) * 6f, 12f);
-                if (inward < wanted) velocity += dir * (wanted - inward);
-                if (grounded && Vector3.Dot(dir, groundNormal) > 0.2f)
-                {
-                    grounded = false; // lifted off the floor
-                    noGroundUntil = Time.time + 0.1f;
-                }
+                grounded = false; // hauled off the floor
+                noGroundUntil = Time.time + 0.1f;
             }
 
             return Vector3.ClampMagnitude(velocity, grappleMaxSpeed);
@@ -746,6 +969,7 @@ namespace GravityPortals
         public void SetAlive(bool value)
         {
             alive = value;
+            if (!value) ResetCrouch(); // you respawn standing
             foreach (var c in GetComponentsInChildren<Collider>()) c.enabled = value;
             if (IsLocallyControlled)
             {
@@ -776,7 +1000,7 @@ namespace GravityPortals
             GUI.Label(new Rect(12, 10, 520, 22),
                 $"Gravity: {gravity}   Speed: {Body.linearVelocity.magnitude:0.0}   {(grounded ? "Grounded" : "Airborne")}");
             if (Cursor.lockState != CursorLockMode.Locked)
-                GUI.Label(new Rect(12, 32, 1300, 22), "Click to play. WASD move, Shift sprint, Space jump, Mouse fire, Right mouse grapple (hold to swing), R reload, 1/2 or wheel switch weapon, Tab scores, K respawn, Esc release mouse.");
+                GUI.Label(new Rect(12, 32, 1600, 22), "Click to play. WASD move, Shift sprint, Space jump, Mouse fire, Right mouse or Q grapple (hold), Ctrl crouch/slide (jump while sliding to launch), R reload, 1/2/3 or wheel switch weapon (3 = sniper, right mouse scopes), Tab scores, K respawn, Esc release mouse.");
             if (TestMap.Active)
                 GUI.Label(new Rect(12, 54, 400, 22), "Test map: H = back to the start");
 
