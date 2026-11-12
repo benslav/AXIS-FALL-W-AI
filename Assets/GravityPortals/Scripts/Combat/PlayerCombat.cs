@@ -382,6 +382,8 @@ namespace GravityPortals
             {
                 var rb = trace.HitCollider.attachedRigidbody;
                 if (rb != null && !rb.isKinematic) rb.AddForceAtPosition(direction * 3f, trace.HitPoint, ForceMode.Impulse);
+                var screen = BreakableScreen.Of(trace.HitCollider);
+                if (screen != null && screen.ServerDamage(def.Damage)) ServerBreakScreen(screen.id);
             }
 
             ShotFxRpc(new ShotPath
@@ -453,14 +455,38 @@ namespace GravityPortals
                 pc.ServerDamage(Mathf.RoundToInt(damage), shooterClientId, push, false, weaponIndex);
             }
 
-            // Shove server-simulated props.
+            // Shove server-simulated props, and tear through screens in the blast.
+            var shooter = Find(shooterClientId);
             foreach (var c in Physics.OverlapSphere(origin, def.SplashRadius, ~0, QueryTriggerInteraction.Ignore))
             {
+                var screen = BreakableScreen.Of(c);
+                if (screen != null)
+                {
+                    float d = Vector3.Distance(c.ClosestPoint(origin), origin);
+                    float dmg = Mathf.Lerp(def.MinSplashDamage, def.Damage, 1f - d / def.SplashRadius);
+                    if (screen.ServerDamage(dmg))
+                    {
+                        if (shooter != null) shooter.ServerBreakScreen(screen.id);
+                        else if (all.Count > 0) all[0].ServerBreakScreen(screen.id);
+                        else BreakableScreen.BreakLocal(screen.id);
+                    }
+                    continue;
+                }
                 var rb = c.attachedRigidbody;
                 if (rb == null || rb.isKinematic || rb.GetComponent<GravityBody>() == null) continue;
                 rb.AddExplosionForce(def.Knockback, origin, def.SplashRadius, 0f, ForceMode.VelocityChange);
             }
         }
+
+        /// <summary>Server: a screen broke. Break it here and on every client.</summary>
+        void ServerBreakScreen(int id)
+        {
+            BreakableScreen.BreakLocal(id);
+            BreakScreenRpc(id);
+        }
+
+        [Rpc(SendTo.NotServer)]
+        void BreakScreenRpc(int id) => BreakableScreen.BreakLocal(id);
 
         static bool Blocked(Vector3 from, Vector3 to)
         {
@@ -548,6 +574,8 @@ namespace GravityPortals
         public void ServerNotePortalPass(Portal from, Vector3 gravity)
         {
             if (!IsServer || !alive.Value || from == null || !from.worldWrap) return;
+            // Swinging on the grapple round the endless lattice isn't falling into the void.
+            if (controller.IsGrappling) { fallWraps.Clear(); return; }
             // Only passes straight down through the surface below you count, not walking
             // sideways through a wall.
             if (Vector3.Angle(from.Normal, -gravity) > 30f) return;

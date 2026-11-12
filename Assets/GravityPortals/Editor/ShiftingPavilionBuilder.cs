@@ -13,7 +13,7 @@ public static class ShiftingPavilionBuilder
 {
     const string ScenePath = "Assets/GravityPortals/Scenes/ShiftingPavilion.unity";
     const string VersionKey = "ClaudeTest.ShiftingPavilion.Version";
-    const int Version = 1;
+    const int Version = 2; // 2 = brighter lighting
 
     static ShiftingPavilionBuilder()
     {

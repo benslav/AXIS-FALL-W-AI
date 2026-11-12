@@ -14,8 +14,11 @@ namespace GravityPortals
         public struct Result
         {
             public Transform Root;
-            public List<GameObject> Boxes; // visible level geometry (for static flags in the editor)
+            public List<GameObject> Boxes;  // level geometry objects (for static flags in the editor)
+            public List<Mesh> Meshes;       // the merged visual meshes (the editor saves them as an asset)
         }
+
+        const float ChunkSize = 16f; // visuals are merged per material within 16 m chunks, so culling still works
 
         /// <param name="materials">One material per <see cref="PavilionMat"/>, in enum order.</param>
         public static Result Build(PavilionLayout layout, Transform parent, Material[] materials,
@@ -32,22 +35,69 @@ namespace GravityPortals
             var propRoot = new GameObject("Crate Spots").transform;
             propRoot.SetParent(parent, false);
 
-            var cube = Resources.GetBuiltinResource<Mesh>("Cube.fbx");
+            // What you see: thousands of boxes merged into a few meshes (one per material per
+            // 16 m chunk), so there's little to draw for your camera and every portal camera.
             var boxes = new List<GameObject>();
+            var meshes = new List<Mesh>();
+            var groups = new Dictionary<(int mat, int chunk), (List<Vector3> v, List<Vector3> n, List<Vector2> uv, List<int> t)>();
             foreach (var b in layout.Boxes)
             {
-                var go = new GameObject(b.Name);
+                if (!b.Visible || b.Breakable) continue; // screens are their own objects (below)
+                int cx = Mathf.Clamp(Mathf.FloorToInt(b.Center.x / ChunkSize), 0, 3);
+                int cy = Mathf.Clamp(Mathf.FloorToInt(b.Center.y / ChunkSize), 0, 3);
+                int cz = Mathf.Clamp(Mathf.FloorToInt(b.Center.z / ChunkSize), 0, 3);
+                var key = ((int)b.Material, cx + 4 * cy + 16 * cz);
+                if (!groups.TryGetValue(key, out var g))
+                    groups[key] = g = (new List<Vector3>(), new List<Vector3>(), new List<Vector2>(), new List<int>());
+                AddBox(b, g.v, g.n, g.uv, g.t);
+            }
+            foreach (var kv in groups)
+            {
+                var mesh = new Mesh { name = $"Pavilion {(PavilionMat)kv.Key.mat} {kv.Key.chunk}", indexFormat = IndexFormat.UInt32 };
+                mesh.SetVertices(kv.Value.v);
+                mesh.SetNormals(kv.Value.n);
+                mesh.SetUVs(0, kv.Value.uv);
+                mesh.SetTriangles(kv.Value.t, 0);
+                mesh.RecalculateBounds();
+                meshes.Add(mesh);
+                var go = new GameObject(mesh.name);
                 go.transform.SetParent(root, false);
+                go.AddComponent<MeshFilter>().sharedMesh = mesh;
+                go.AddComponent<MeshRenderer>().sharedMaterial = materials[kv.Key.mat];
+                boxes.Add(go);
+            }
+
+            // What you bump into: invisible boxes.
+            var colliderRoot = new GameObject("Colliders").transform;
+            colliderRoot.SetParent(root, false);
+            foreach (var b in layout.Boxes)
+            {
+                if (!b.Collide || b.Breakable) continue;
+                var go = new GameObject(b.Name);
+                go.transform.SetParent(colliderRoot, false);
                 go.transform.SetPositionAndRotation(b.Center, b.Rotation);
                 go.transform.localScale = b.Size;
-                if (b.Visible)
-                {
-                    go.AddComponent<MeshFilter>().sharedMesh = cube;
-                    go.AddComponent<MeshRenderer>().sharedMaterial = materials[(int)b.Material];
-                    boxes.Add(go);
-                }
-                if (b.Collide) go.AddComponent<BoxCollider>();
+                go.AddComponent<BoxCollider>();
+                boxes.Add(go);
                 if (b.StairRamp) go.AddComponent<StairSteps>().origin = b.StairOrigin;
+            }
+
+            // Breakable screens: each its own object, so it can disappear and grow back.
+            Mesh cube = null;
+            foreach (var b in layout.Boxes)
+            {
+                if (!b.Breakable) continue;
+                if (cube == null) cube = Resources.GetBuiltinResource<Mesh>("Cube.fbx");
+                var go = new GameObject(b.Name);
+                go.SetActive(false); // id first, then wake up and register
+                go.transform.SetParent(colliderRoot, false);
+                go.transform.SetPositionAndRotation(b.Center, b.Rotation);
+                go.transform.localScale = b.Size;
+                go.AddComponent<MeshFilter>().sharedMesh = cube;
+                go.AddComponent<MeshRenderer>().sharedMaterial = materials[(int)b.Material];
+                go.AddComponent<BoxCollider>();
+                go.AddComponent<BreakableScreen>().id = b.BreakId;
+                go.SetActive(true);
             }
 
             // Portals: created inactive so their id and settings are in place before they wake up.
@@ -107,7 +157,7 @@ namespace GravityPortals
                 go.AddComponent<PropSpawnPoint>();
             }
 
-            return new Result { Root = root, Boxes = boxes };
+            return new Result { Root = root, Boxes = boxes, Meshes = meshes };
         }
 
         /// <summary>The whole level as one mesh, one submesh per material in use, for the

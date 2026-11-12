@@ -27,6 +27,7 @@ public static class GravityPortalsBuild
         "Assets/GravityPortals/Scenes/TriGravityAtriumLarge.unity",
         "Assets/GravityPortals/Scenes/EndlessPavilion.unity",
         "Assets/GravityPortals/Scenes/ShiftingPavilion.unity",
+        "Assets/GravityPortals/Scenes/HollowFortress.unity",
         "Assets/GravityPortals/Scenes/PortalTestLab.unity",
     };
 

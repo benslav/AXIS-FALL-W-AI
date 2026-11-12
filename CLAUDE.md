@@ -41,6 +41,8 @@ Each has an `EditorPrefs` version key; bumping its `Version` const makes it rebu
   `LobbyState.MapSeed`, re-rolled on Back to lobby). `PavilionLayout` is pure data and deterministic per seed, so it
   can be checked outside Unity (compile it against `UnityEngine.CoreModule.dll` in a net8 console app; avoid
   engine-only calls like `Bounds.Contains` in the checker)
+- `HollowFortressBuilder` (hollow cube, a full arena on all six inner faces round a void; layout data in
+  `FortressLayout`, one colour palette per face, breakable shoji screens via `BreakableScreen` + `PlayerCombat`)
 - `PortalTestLabBuilder` (24 test rooms; signs show expected landings computed with `GravityAfterPass`)
 - `MainMenuBuilder` (menu/lobby scene, `LobbyState` prefab, session prefab list)
 

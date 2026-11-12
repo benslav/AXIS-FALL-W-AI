@@ -70,8 +70,8 @@ namespace GravityPortals
         public float bulletJumpLift = 9.5f;
 
         [Header("Grappling hook")]
-        [Tooltip("How far the hook reaches (m).")]
-        public float grappleRange = 45f;
+        [Tooltip("How far the hook reaches (m). Large enough to be no real limit: anything solid you can aim at.")]
+        public float grappleRange = 1000f;
         [Tooltip("Instant speed toward the anchor when the hook bites (m/s).")]
         public float grappleYankSpeed = 7f;
         [Tooltip("How hard the rope hauls you toward the anchor while you hold on (m/s²). Gravity is 22.")]
@@ -286,6 +286,7 @@ namespace GravityPortals
             bool grappleHold = Input.GetKey(KeyCode.F);
             if (alive && looking && grappleDown) TryGrapple();
             if (grappling && (!alive || !grappleHold)) ReleaseGrapple();
+            grappleAim = alive && looking && !grappling ? FindGrappleTarget(out _, out grappleAimDistance) : GrappleAim.Nothing;
 
             float settle = 1f - Mathf.Exp(-recoilRecovery * Time.deltaTime);
             recoilPitch = Mathf.Lerp(recoilPitch, 0f, settle);
@@ -673,45 +674,84 @@ namespace GravityPortals
 
         // ------------------------------------------------------------------ grappling hook
 
+        enum GrappleAim { Nothing, Hookable, TooFar, Portal }
+
+        // What the crosshair is on, for the indicator (updated every frame).
+        GrappleAim grappleAim;
+        float grappleAimDistance;
+
+        /// <summary>What the hook would catch if fired now. Shared by the crosshair indicator
+        /// and the hook itself, so what you see is what you get.</summary>
+        GrappleAim FindGrappleTarget(out Vector3 point, out float distance)
+        {
+            point = Vector3.zero;
+            distance = 0f;
+            Vector3 origin = viewCamera != null ? viewCamera.transform.position : EyePosition;
+            Vector3 dir = AimRotation * Vector3.forward;
+            // On wrap-around maps the space repeats: when the aim leaves through a wrap wall it
+            // carries on in from the opposite wall, so the "background" copies can be hooked.
+            // offset takes points found after wrapping back to where you see them.
+            Vector3 offset = Vector3.zero;
+            float travelled = 0f;
+            for (int wrap = 0; wrap < 6; wrap++)
+            {
+                float remaining = grappleRange - travelled;
+                if (remaining <= 0f) break;
+
+                // The nearest solid level surface: not players, crates or bolts (anything with a
+                // rigidbody), and not a wall you're passing through a portal in.
+                int count = Physics.RaycastNonAlloc(origin, dir, hits, remaining, ~0, QueryTriggerInteraction.Ignore);
+                float best = float.MaxValue;
+                Vector3 hitPoint = Vector3.zero;
+                for (int i = 0; i < count; i++)
+                {
+                    var h = hits[i];
+                    if (h.distance >= best || h.collider.attachedRigidbody != null || IsHostIgnored(h.collider)) continue;
+                    best = h.distance;
+                    hitPoint = h.point;
+                }
+
+                // Portals in the way: a door is a miss (the rope can't go through), a wrap wall
+                // means carrying on from the other side.
+                float doorT = float.MaxValue, wrapT = float.MaxValue;
+                Portal wrapWall = null;
+                foreach (var p in Portal.All)
+                {
+                    if (p == null || p.linkedPortal == null) continue;
+                    float t = p.RaycastOpening(origin, dir);
+                    if (t < 0f || t > remaining) continue;
+                    if (p.worldWrap) { if (t < wrapT) { wrapT = t; wrapWall = p; } }
+                    else doorT = Mathf.Min(doorT, t);
+                }
+
+                float first = Mathf.Min(best, Mathf.Min(doorT, wrapT));
+                if (first == float.MaxValue) return GrappleAim.Nothing;
+                if (first == doorT) { distance = travelled + doorT; return GrappleAim.Portal; }
+                if (first == best)
+                {
+                    point = hitPoint + offset;
+                    distance = travelled + best;
+                    return distance <= grappleRange ? GrappleAim.Hookable : GrappleAim.TooFar;
+                }
+
+                // Through the wrap wall: same line, continuing from the opposite wall.
+                Vector3 entry = origin + dir * wrapT;
+                Vector3 exit = Portal.TransferMatrix(wrapWall, wrapWall.linkedPortal).MultiplyPoint3x4(entry);
+                dir = Portal.TransferRotation(wrapWall, wrapWall.linkedPortal) * dir;
+                offset += entry - exit;
+                origin = exit + dir * 0.01f;
+                travelled += wrapT + 0.01f;
+            }
+            return GrappleAim.Nothing;
+        }
+
         void TryGrapple()
         {
             if (Time.time < grappleReadyTime || Body.isKinematic) return;
-            Vector3 origin = viewCamera != null ? viewCamera.transform.position : EyePosition;
-            Vector3 dir = AimRotation * Vector3.forward;
-
-            // The nearest solid level surface: not players, crates or bolts (anything with a
-            // rigidbody), and not a wall you're passing through a portal in.
-            int count = Physics.RaycastNonAlloc(origin, dir, hits, grappleRange, ~0, QueryTriggerInteraction.Ignore);
-            float best = float.MaxValue;
-            Vector3 point = Vector3.zero;
-            for (int i = 0; i < count; i++)
-            {
-                var h = hits[i];
-                if (h.distance >= best || h.collider.attachedRigidbody != null || IsHostIgnored(h.collider)) continue;
-                best = h.distance;
-                point = h.point;
-            }
-            if (best == float.MaxValue)
+            if (FindGrappleTarget(out Vector3 point, out _) != GrappleAim.Hookable)
             {
                 Sfx.Play2D(SoundBank.Empty, 0.35f, 0.7f);
                 return;
-            }
-
-            // The rope can't go through a portal: aiming into one (rather than at the wall
-            // around it) is a miss.
-            foreach (var p in Portal.All)
-            {
-                if (p == null || p.worldWrap) continue;
-                float facing = Vector3.Dot(dir, p.Normal);
-                if (facing >= -1e-4f) continue;
-                float t = Vector3.Dot(p.transform.position - origin, p.Normal) / facing;
-                if (t <= 0f || t >= best) continue;
-                Vector3 local = p.transform.InverseTransformPoint(origin + dir * t);
-                if (Mathf.Abs(local.x) <= p.size.x * 0.5f && Mathf.Abs(local.y) <= p.size.y * 0.5f)
-                {
-                    Sfx.Play2D(SoundBank.Empty, 0.35f, 0.7f);
-                    return;
-                }
             }
 
             grappling = true;
@@ -722,6 +762,34 @@ namespace GravityPortals
             fovKick += 3f;
             Sfx.Play2D(SoundBank.Click, 0.7f, 0.5f);
             Sfx.Play2D(SoundBank.Land, 0.4f, 1.4f);
+        }
+
+        GUIStyle grappleLabel;
+
+        /// <summary>Corner brackets round the crosshair: cyan when F would hook what you're
+        /// aiming at (with the distance), red when it's out of range or you're aiming into a
+        /// portal, nothing when there's nothing to hook.</summary>
+        void DrawGrappleIndicator(Texture2D white)
+        {
+            if (grappleAim == GrappleAim.Nothing) return;
+            float cx = Screen.width * 0.5f, cy = Screen.height * 0.5f;
+            bool ok = grappleAim == GrappleAim.Hookable;
+            Color c = ok ? new Color(0.35f, 0.95f, 1f, 0.95f) : new Color(1f, 0.35f, 0.3f, 0.6f);
+            const float r = 20f, len = 7f, t = 2f;
+            GUI.color = c;
+            for (int sx = -1; sx <= 1; sx += 2)
+                for (int sy = -1; sy <= 1; sy += 2)
+                {
+                    float x = cx + sx * r, y = cy + sy * r;
+                    GUI.DrawTexture(new Rect(sx < 0 ? x : x - len, y - t * 0.5f, len, t), white); // horizontal arm
+                    GUI.DrawTexture(new Rect(x - t * 0.5f, sy < 0 ? y : y - len, t, len), white); // vertical arm
+                }
+            if (grappleLabel == null)
+                grappleLabel = new GUIStyle(GUI.skin.label) { fontSize = 12, fontStyle = FontStyle.Bold, alignment = TextAnchor.UpperCenter };
+            string text = grappleAim == GrappleAim.Portal ? "can't hook through a portal"
+                : ok ? $"F  {grappleAimDistance:0} m" : $"too far  {grappleAimDistance:0} m";
+            GUI.Label(new Rect(cx - 100f, cy + r + 6f, 200f, 20f), text, grappleLabel);
+            GUI.color = Color.white;
         }
 
         void ReleaseGrapple()
@@ -745,7 +813,6 @@ namespace GravityPortals
         {
             Vector3 toAnchor = grappleAnchor - Body.position;
             float dist = toAnchor.magnitude;
-            if (dist > grappleRange * 1.5f) { ReleaseGrapple(); return velocity; } // e.g. carried off by a knockback
             if (dist < 0.05f) return velocity;
             Vector3 dir = toAnchor / dist;
 
@@ -878,7 +945,12 @@ namespace GravityPortals
         {
             // The view is carried through exactly (what you saw through the portal is what you
             // see now), then AlignToGravity eases the camera back upright. Seamless: no flash.
-            ReleaseGrapple(); // the rope can't follow you through a portal
+            // The rope can't follow you through a door, but a wrap wall is just the space
+            // repeating: the anchor shifts across with you and the swing carries straight on.
+            if (grappling && from.worldWrap && to.worldWrap)
+                grappleAnchor = Portal.TransferMatrix(from, to).MultiplyPoint3x4(grappleAnchor);
+            else
+                ReleaseGrapple();
             bodyRotation = newRotation;
             Vector3 oldGravity = gravityDirection;
             // Your falling direction carries through the portal.
@@ -992,6 +1064,7 @@ namespace GravityPortals
             if (!IsLocallyControlled) return;
 
             var white = Texture2D.whiteTexture;
+            DrawGrappleIndicator(white);
             if (flashAlpha > 0f)
             {
                 GUI.color = new Color(flashColor.r, flashColor.g, flashColor.b, flashAlpha);

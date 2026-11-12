@@ -19,6 +19,9 @@ namespace GravityPortals
         public bool Visible;
         /// <summary>Hidden walking ramp under a staircase (gets a StairSteps marker).</summary>
         public bool StairRamp;
+        /// <summary>A breakable shoji screen: its own object (not merged), id = BreakId.</summary>
+        public bool Breakable;
+        public int BreakId;
         public Vector3 StairOrigin;
     }
 
@@ -77,6 +80,10 @@ namespace GravityPortals
         public readonly List<PavilionMarker> Spawns = new List<PavilionMarker>();
         public readonly List<PavilionMarker> Props = new List<PavilionMarker>();
         public readonly List<PavilionRoomInfo> Rooms = new List<PavilionRoomInfo>();
+        /// <summary>Bounds of the solid buildings filling the space round the rooms.</summary>
+        public readonly List<Bounds> Buildings = new List<Bounds>();
+        /// <summary>Bounds of the bridges and beams linking rooms and buildings.</summary>
+        public readonly List<Bounds> Connectors = new List<Bounds>();
 
         public static PavilionLayout Generate(int seed) => new PavilionGenerator(seed).Run();
 
@@ -118,7 +125,7 @@ namespace GravityPortals
     /// <summary>Does the actual generating for <see cref="PavilionLayout.Generate"/>.</summary>
     sealed class PavilionGenerator
     {
-        enum Kind { Hall, TeaRoom, Gallery, TallHall, Terrace }
+        enum Kind { Hall, TeaRoom, Gallery, TallHall, Terrace, Building }
         enum Side { Door, Shoji, TallShoji, Rail, None }
         enum Annex { None, StairDown, StairUp, Bridge }
 
@@ -166,6 +173,8 @@ namespace GravityPortals
             public readonly List<(Vector3 pos, float radius)> Reserved = new List<(Vector3, float)>(); // kept clear of furniture
             public readonly List<Vector3> SpawnSpots = new List<Vector3>();
             public readonly List<Vector3> PropSpots = new List<Vector3>();
+            public readonly List<float> WalkLevels = new List<float>(); // heights you can stand at (room frame), for bridges
+            public readonly List<Bounds> Headroom = new List<Bounds>(); // space people stand in (room frame), kept clear
             public Bounds LocalBounds;
 
             public float Offset(int s) => s < 2 ? W * 0.5f : D * 0.5f;
@@ -199,6 +208,8 @@ namespace GravityPortals
                 BuildRoom(r);
             }
             Place();
+            PlaceBuildings();
+            Connect();
             Emit();
             WrapWalls();
             return layout;
@@ -355,6 +366,8 @@ namespace GravityPortals
             }
 
             for (int s = 0; s < 4; s++) BuildSide(r, s);
+            r.WalkLevels.Add(0f); // the floor
+            if (r.Kind == Kind.TallHall) r.WalkLevels.Add(4f); // the raised floor
 
             switch (r.Kind)
             {
@@ -374,7 +387,29 @@ namespace GravityPortals
             if (r.Kind != Kind.Gallery)
                 r.LightSpots.Add((new Vector3(0, r.Kind == Kind.TallHall ? 6.5f : 3.4f, 0), Mathf.Max(r.W, r.D) + 8f, 2.6f));
 
-            // Bounds of everything visible, in the room frame.
+            // The building around the room: a roof with eaves (or a tower on top), and closed,
+            // lit storeys underneath, so it stands as a whole building rather than a floor in the air.
+            bool tower = (r.Kind == Kind.Hall || r.Kind == Kind.TeaRoom) && Chance(0.35f);
+            if (!terrace)
+            {
+                Vector3 roofBase = new Vector3(0, h + 0.175f, 0);
+                Roof(r, roofBase, r.W, r.D, tier: !tower);
+                r.WalkLevels.Add(roofBase.y + 0.4f); // the roof
+                if (tower) Block(r, roofBase + Vector3.up * 0.4f, Mathf.Round(r.W * 0.5f), Mathf.Round(r.D * 0.5f), Range(1, 3), roof: true);
+            }
+            int below = terrace ? Range(1, 4) : Range(1, 3);
+            Block(r, new Vector3(0, -0.5f - below * Storey, 0), r.W - 0.8f, r.D - 0.8f, below, roof: false);
+            P(r, "Foundation", new Vector3(0, -0.5f - below * Storey - 0.15f, 0), new Vector3(r.W - 0.3f, 0.3f, r.D - 0.3f), PavilionMat.Lacquer);
+
+            // Bounds of everything visible, plus the space people stand in (open terraces and the
+            // platforms out on stairs and bridges), so nothing gets built through it.
+            r.LocalBounds = PartBounds(r);
+            if (terrace) r.Headroom.Add(new Bounds(new Vector3(0, 2f, 0), new Vector3(r.W, 4f, r.D)));
+            foreach (var space in r.Headroom) r.LocalBounds.Encapsulate(space);
+        }
+
+        static Bounds PartBounds(Room r)
+        {
             var b = new Bounds(Vector3.zero, Vector3.zero);
             bool first = true;
             foreach (var p in r.Parts)
@@ -383,8 +418,363 @@ namespace GravityPortals
                 var pb = new Bounds(p.Center, p.Size);
                 if (first) { b = pb; first = false; } else b.Encapsulate(pb);
             }
-            b.Encapsulate(new Bounds(new Vector3(0, 2f, 0), new Vector3(r.W, 4f, r.D))); // headroom on terraces
-            r.LocalBounds = b;
+            return b;
+        }
+
+        // ------------------------------------------------------------------ building exteriors (room frame)
+
+        const float Storey = 3.6f;
+
+        /// <summary>A solid block of <paramref name="storeys"/> storeys standing on <paramref name="bottom"/>,
+        /// lit windows on every face, corner posts, and optionally a roof.</summary>
+        void Block(Room r, Vector3 bottom, float w, float d, int storeys, bool roof)
+        {
+            float height = storeys * Storey;
+            P(r, "Building", bottom + Vector3.up * (height * 0.5f), new Vector3(w, height, d), PavilionMat.Wood);
+            for (int s = 0; s < 4; s++)
+            {
+                float off = s < 2 ? w * 0.5f : d * 0.5f, length = s < 2 ? d : w;
+                Windows(r, bottom + Outward[s] * off, Along[s], Outward[s], length - 0.7f, storeys);
+            }
+            for (int sx = -1; sx <= 1; sx += 2)
+                for (int sz = -1; sz <= 1; sz += 2)
+                    P(r, "Corner Post", bottom + new Vector3(sx * w * 0.5f, height * 0.5f, sz * d * 0.5f), new Vector3(0.32f, height, 0.32f), PavilionMat.Lacquer, false);
+            if (roof) Roof(r, bottom + Vector3.up * height, w, d, tier: w >= 6f && d >= 6f);
+        }
+
+        /// <summary>Rows of glowing paper windows across one face, a row per storey, with a
+        /// band between storeys.</summary>
+        void Windows(Room r, Vector3 faceBottom, Vector3 along, Vector3 outward, float length, int storeys)
+        {
+            if (length < 1.4f) return;
+            int count = Mathf.Max(1, Mathf.FloorToInt((length + 0.6f) / 2.2f));
+            float spacing = length / count;
+            for (int s = 0; s < storeys; s++)
+            {
+                float y0 = s * Storey;
+                for (int i = 0; i < count; i++)
+                {
+                    float a = -length * 0.5f + spacing * (i + 0.5f);
+                    P(r, "Window", faceBottom + along * a + Vector3.up * (y0 + 1.9f) + outward * 0.04f,
+                        SizeAlong(along, Mathf.Min(1.1f, spacing - 0.4f), 1.6f, 0.08f), PavilionMat.Paper, false);
+                }
+                if (s > 0)
+                    P(r, "Storey Band", faceBottom + Vector3.up * y0 + outward * 0.05f, SizeAlong(along, length + 0.6f, 0.18f, 0.1f), PavilionMat.Lacquer, false);
+            }
+        }
+
+        /// <summary>A roof slab with overhanging eaves, a lacquered edge, lanterns hanging at the
+        /// corners, and optionally a smaller second tier on top.</summary>
+        void Roof(Room r, Vector3 top, float w, float d, bool tier)
+        {
+            const float eave = 0.7f;
+            P(r, "Roof", top + Vector3.up * 0.2f, new Vector3(w + eave * 2f, 0.4f, d + eave * 2f), PavilionMat.Wood);
+            for (int s = 0; s < 4; s++)
+            {
+                float off = (s < 2 ? w : d) * 0.5f + eave, length = (s < 2 ? d : w) + eave * 2f;
+                P(r, "Roof Edge", top + Outward[s] * off + Vector3.up * 0.2f, SizeAlong(Along[s], length + 0.12f, 0.5f, 0.12f), PavilionMat.Lacquer, false);
+            }
+            for (int sx = -1; sx <= 1; sx += 2)
+                for (int sz = -1; sz <= 1; sz += 2)
+                    P(r, "Eave Lantern", top + new Vector3(sx * (w * 0.5f + eave - 0.25f), -0.35f, sz * (d * 0.5f + eave - 0.25f)),
+                        new Vector3(0.3f, 0.42f, 0.3f), PavilionMat.Lantern, false);
+            if (tier)
+            {
+                float tw = Mathf.Round(w * 0.55f), td = Mathf.Round(d * 0.55f);
+                P(r, "Roof Tier", top + Vector3.up * 0.75f, new Vector3(tw, 0.7f, td), PavilionMat.Wood);
+                P(r, "Roof Tier Cap", top + Vector3.up * 1.25f, new Vector3(tw + 1f, 0.3f, td + 1f), PavilionMat.Wood);
+                P(r, "Roof Lantern", top + Vector3.up * 1.6f, new Vector3(0.35f, 0.4f, 0.35f), PavilionMat.Lantern, false);
+            }
+        }
+
+        /// <summary>A solid building with no way in: city around the rooms. You can land on it,
+        /// grapple to it and walk its balconies.</summary>
+        Room DesignBuilding(int index)
+        {
+            var r = new Room { Kind = Kind.Building, Name = $"Building {index + 1}" };
+            r.W = Pick(new[] { 6f, 8f, 10f, 12f, 14f });
+            r.D = Pick(new[] { 6f, 8f, 10f, 12f, 14f });
+            // Mostly share a room's "down", so many neighbours can be joined by walkable bridges.
+            Vector3 up = Chance(0.7f) && rooms.Count > 0 ? rooms[Range(0, rooms.Count)].Up : Pick(Axes), forward;
+            do forward = Pick(Axes); while (Mathf.Abs(Vector3.Dot(forward, up)) > 0.5f);
+            r.Up = up;
+            r.Rotation = PavilionLayout.Basis(forward, up);
+
+            int storeys = Range(2, 6);
+            bool tower = Chance(0.3f) && r.W >= 8f && r.D >= 8f;
+            Block(r, Vector3.zero, r.W, r.D, storeys, roof: !tower);
+            float top = storeys * Storey;
+            r.WalkLevels.Add(top + 0.4f); // the roof
+            if (tower)
+            {
+                Roof(r, Vector3.up * top, r.W, r.D, tier: false);
+                Block(r, Vector3.up * (top + 0.4f), Mathf.Round(r.W * 0.5f), Mathf.Round(r.D * 0.5f), Range(1, 3), roof: true);
+            }
+            if (Chance(0.45f))
+            {
+                // A balcony walk round one storey, with a rail.
+                float y = Range(1, storeys) * Storey;
+                r.WalkLevels.Add(y);
+                P(r, "Balcony", new Vector3(0, y - 0.125f, 0), new Vector3(r.W + 2.4f, 0.25f, r.D + 2.4f), PavilionMat.Wood);
+                for (int s = 0; s < 4; s++)
+                {
+                    float off = (s < 2 ? r.W : r.D) * 0.5f + 1.2f, length = (s < 2 ? r.D : r.W) + 2.4f;
+                    Rail(r, Outward[s] * off + Vector3.up * y, length, Along[s]);
+                }
+            }
+            r.LocalBounds = PartBounds(r);
+            return r;
+        }
+
+        readonly List<Room> buildings = new List<Room>();
+
+        /// <summary>Fills the space round the rooms with solid buildings, wherever they fit.</summary>
+        void PlaceBuildings()
+        {
+            var taken = new List<Bounds>();
+            foreach (var r in rooms)
+                taken.Add(new Bounds(r.Position + r.Rotation * r.LocalBounds.center, Abs(r.Rotation * r.LocalBounds.size) + Vector3.one * (BuildingRoomGap * 2f)));
+            int wanted = Range(22, 34);
+            for (int attempt = 0; attempt < wanted * 5 && buildings.Count < wanted; attempt++)
+            {
+                var b = DesignBuilding(buildings.Count);
+                Vector3 c = b.Rotation * b.LocalBounds.center;
+                Vector3 e = Abs(b.Rotation * b.LocalBounds.extents);
+                var min = Vector3.one * FaceMargin + e - c;
+                var max = Vector3.one * (PavilionLayout.CellSize - FaceMargin) - e - c;
+                if (min.x > max.x || min.y > max.y || min.z > max.z) continue;
+                for (int t = 0; t < 30; t++)
+                {
+                    var pos = new Vector3(
+                        Mathf.Round(Mathf.Lerp(min.x, max.x, Value()) * 2f) * 0.5f,
+                        Mathf.Round(Mathf.Lerp(min.y, max.y, Value()) * 2f) * 0.5f,
+                        Mathf.Round(Mathf.Lerp(min.z, max.z, Value()) * 2f) * 0.5f);
+                    var bounds = new Bounds(pos + c, e * 2f);
+                    var padded = new Bounds(bounds.center, bounds.size + Vector3.one * (BuildingGap * 2f));
+                    bool clash = false;
+                    foreach (var other in taken) if (other.Intersects(padded)) { clash = true; break; }
+                    if (clash) continue;
+                    b.Position = pos;
+                    buildings.Add(b);
+                    // Rooms' bounds already carry their gap; buildings carry half of theirs each side.
+                    taken.Add(bounds);
+                    break;
+                }
+            }
+        }
+
+        const float BuildingGap = 1.5f;      // between buildings
+        const float BuildingRoomGap = 2.5f;  // between a building and a room
+
+        // ------------------------------------------------------------------ connections
+
+        /// <summary>A room or building, as seen by the connection pass.</summary>
+        sealed class Structure
+        {
+            public Bounds Bounds;   // world
+            public Vector3 Up;
+            public int UpAxis;
+            public float UpSign;
+            public bool Solid;      // a building: connectors may sink into it a little
+            public int Degree;
+            public readonly List<float> Levels = new List<float>(); // walkable heights (world coordinate on the up axis)
+        }
+
+        readonly List<PavilionBox> connectorBoxes = new List<PavilionBox>();
+        readonly List<Bounds> connectorBounds = new List<Bounds>();
+        const int MaxLinks = 3;
+
+        static int AxisOf(Vector3 v) => Mathf.Abs(v.x) > 0.5f ? 0 : Mathf.Abs(v.y) > 0.5f ? 1 : 2;
+        static float Comp(Vector3 v, int axis) => axis == 0 ? v.x : axis == 1 ? v.y : v.z;
+        static Vector3 Axes3(int a0, float v0, int a1, float v1, int a2, float v2)
+        {
+            var v = Vector3.zero;
+            v[a0] = v0; v[a1] = v1; v[a2] = v2;
+            return v;
+        }
+
+        Structure MakeStructure(Room r, bool solid)
+        {
+            var s = new Structure
+            {
+                Bounds = new Bounds(r.World(r.LocalBounds.center), Abs(r.Rotation * r.LocalBounds.size)),
+                Up = r.Up,
+                UpAxis = AxisOf(r.Up),
+                Solid = solid,
+            };
+            s.UpSign = Comp(r.Up, s.UpAxis);
+            foreach (float y in r.WalkLevels) s.Levels.Add(Comp(r.World(Vector3.up * y), s.UpAxis));
+            return s;
+        }
+
+        /// <summary>Links neighbouring rooms and buildings: railed walkway bridges between ones that
+        /// share a "down" (at a floor, roof or balcony height where possible), timber beams between
+        /// ones that don't. First enough links to join everything into one cluster, then a few more.</summary>
+        void Connect()
+        {
+            var all = new List<Structure>();
+            foreach (var r in rooms) all.Add(MakeStructure(r, false));
+            foreach (var b in buildings) all.Add(MakeStructure(b, true));
+
+            // Pairs facing each other across a gap along one axis, overlapping enough on the other two.
+            var candidates = new List<(int a, int b, int k, float gap)>();
+            for (int i = 0; i < all.Count; i++)
+                for (int j = i + 1; j < all.Count; j++)
+                {
+                    Bounds A = all[i].Bounds, B = all[j].Bounds;
+                    for (int k = 0; k < 3; k++)
+                    {
+                        float gap = Mathf.Max(B.min[k] - A.max[k], A.min[k] - B.max[k]);
+                        if (gap < 1f || gap > 26f) continue;
+                        bool overlaps = true;
+                        for (int o = 0; o < 3; o++)
+                        {
+                            if (o == k) continue;
+                            if (Mathf.Min(A.max[o], B.max[o]) - Mathf.Max(A.min[o], B.min[o]) < 3f) overlaps = false;
+                        }
+                        if (overlaps) candidates.Add((i, j, k, gap));
+                    }
+                }
+            candidates.Sort((x, y) => x.gap.CompareTo(y.gap));
+
+            var parent = new int[all.Count];
+            for (int i = 0; i < parent.Length; i++) parent[i] = i;
+            int Find(int x) { while (parent[x] != x) x = parent[x] = parent[parent[x]]; return x; }
+            var linked = new HashSet<(int, int)>();
+
+            // Join separate clusters first (shortest gaps first)...
+            foreach (var c in candidates)
+            {
+                if (Find(c.a) == Find(c.b) || all[c.a].Degree >= MaxLinks || all[c.b].Degree >= MaxLinks) continue;
+                if (!TryConnect(all, c.a, c.b, c.k)) continue;
+                parent[Find(c.a)] = Find(c.b);
+                linked.Add((c.a, c.b));
+            }
+            // ...then a few extra links for more routes.
+            int extra = all.Count / 3;
+            foreach (var c in candidates)
+            {
+                if (extra <= 0) break;
+                if (linked.Contains((c.a, c.b)) || all[c.a].Degree >= MaxLinks || all[c.b].Degree >= MaxLinks || !Chance(0.5f)) continue;
+                if (!TryConnect(all, c.a, c.b, c.k)) continue;
+                linked.Add((c.a, c.b));
+                extra--;
+            }
+        }
+
+        bool TryConnect(List<Structure> all, int ia, int ib, int k)
+        {
+            Structure A = all[ia], B = all[ib];
+            // Low = the one at the smaller coordinate along k.
+            bool aLow = A.Bounds.max[k] <= B.Bounds.min[k];
+            Structure low = aLow ? A : B, high = aLow ? B : A;
+            // Sink a little into solid buildings so the joint looks built, not glued on.
+            float s0 = low.Bounds.max[k] - (low.Solid ? 0.6f : 0f);
+            float s1 = high.Bounds.min[k] + (high.Solid ? 0.6f : 0f);
+            float span = s1 - s0, mid = (s0 + s1) * 0.5f;
+
+            var parts = new List<PavilionBox>();
+            bool built = false;
+
+            if (A.Up == B.Up && A.UpAxis != k)
+            {
+                int a = A.UpAxis, w = 3 - k - a;
+                float sign = A.UpSign;
+                float loA = Mathf.Max(A.Bounds.min[a], B.Bounds.min[a]), hiA = Mathf.Min(A.Bounds.max[a], B.Bounds.max[a]);
+                float loW = Mathf.Max(A.Bounds.min[w], B.Bounds.min[w]) + 1.6f, hiW = Mathf.Min(A.Bounds.max[w], B.Bounds.max[w]) - 1.6f;
+                // A walk height that fits the overlap (deck below it, rail above): one both share
+                // if there is one, else one of either side's.
+                bool Fits(float L) => sign > 0f ? (L - 0.5f >= loA && L + 1.3f <= hiA) : (L + 0.5f <= hiA && L - 1.3f >= loA);
+                float level = float.NaN;
+                foreach (float la in A.Levels)
+                    foreach (float lb in B.Levels)
+                        if (Mathf.Abs(la - lb) < 0.3f && Fits(la)) level = la;
+                if (float.IsNaN(level))
+                {
+                    var options = new List<float>();
+                    foreach (float l in A.Levels) if (Fits(l)) options.Add(l);
+                    foreach (float l in B.Levels) if (Fits(l)) options.Add(l);
+                    if (options.Count > 0) level = options[Range(0, options.Count)];
+                }
+                if (float.IsNaN(level))
+                {
+                    // No shared floor height: still a walkway, somewhere in the height they share.
+                    float lo = sign > 0f ? loA + 0.5f : loA + 1.3f, hi = sign > 0f ? hiA - 1.3f : hiA - 0.5f;
+                    if (hi >= lo) level = Mathf.Round(Mathf.Lerp(lo, hi, Value()) * 2f) * 0.5f;
+                    if (!float.IsNaN(level) && !Fits(level)) level = float.NaN;
+                }
+                if (!float.IsNaN(level) && hiW >= loW)
+                {
+                    float wPos = Mathf.Round(Mathf.Lerp(loW, hiW, Value()) * 2f) * 0.5f;
+                    Bridge(parts, k, a, w, sign, s0, s1, level, wPos);
+                    built = true;
+                }
+            }
+            if (!built)
+            {
+                // Timber beams across the gap.
+                int p = (k + 1) % 3, q = (k + 2) % 3;
+                float loP = Mathf.Max(A.Bounds.min[p], B.Bounds.min[p]) + 0.8f, hiP = Mathf.Min(A.Bounds.max[p], B.Bounds.max[p]) - 0.8f;
+                float loQ = Mathf.Max(A.Bounds.min[q], B.Bounds.min[q]) + 0.8f, hiQ = Mathf.Min(A.Bounds.max[q], B.Bounds.max[q]) - 0.8f;
+                float pp = Mathf.Lerp(loP, hiP, Value()), qq = Mathf.Lerp(loQ, hiQ, Value());
+                parts.Add(Box("Beam", Axes3(k, mid, p, pp, q, qq), Axes3(k, span, p, 0.8f, q, 0.8f), PavilionMat.Lacquer));
+                if (hiP - loP > 2f)
+                {
+                    float pp2 = pp + (pp + 1.8f <= hiP ? 1.8f : -1.8f);
+                    parts.Add(Box("Beam", Axes3(k, mid, p, pp2, q, qq), Axes3(k, span, p, 0.5f, q, 0.5f), PavilionMat.Wood));
+                }
+            }
+
+            // Mustn't run into any other structure or connector.
+            var bounds = new Bounds(parts[0].Center, Vector3.zero);
+            foreach (var part in parts) bounds.Encapsulate(new Bounds(part.Center, part.Size));
+            // Checked over the open gap between the two (the ends inside them don't count).
+            float g0 = low.Bounds.max[k] + 0.05f, g1 = high.Bounds.min[k] - 0.05f;
+            var check = new Bounds(bounds.center, bounds.size + Vector3.one * 0.4f);
+            check.center = With(check.center, k, (g0 + g1) * 0.5f);
+            check.size = With(check.size, k, Mathf.Max(0.1f, g1 - g0));
+            for (int i = 0; i < all.Count; i++)
+                if (i != ia && i != ib && all[i].Bounds.Intersects(check)) return false;
+            foreach (var other in connectorBounds) if (other.Intersects(check)) return false;
+
+            connectorBoxes.AddRange(parts);
+            connectorBounds.Add(bounds);
+            A.Degree++;
+            B.Degree++;
+            return true;
+        }
+
+        static Vector3 With(Vector3 v, int axis, float value) { v[axis] = value; return v; }
+
+        static PavilionBox Box(string name, Vector3 center, Vector3 size, PavilionMat mat, bool collide = true) => new PavilionBox
+        {
+            Name = name, Center = center, Size = size, Rotation = Quaternion.identity, Material = mat, Collide = collide, Visible = true,
+        };
+
+        /// <summary>A railed walkway along axis k from s0 to s1, walking surface at <paramref name="level"/>
+        /// on axis a (up is +a when sign &gt; 0), centred at <paramref name="wPos"/> across it, with
+        /// lanterns along the rails and a beam underneath.</summary>
+        void Bridge(List<PavilionBox> parts, int k, int a, int w, float sign, float s0, float s1, float level, float wPos)
+        {
+            float span = s1 - s0, mid = (s0 + s1) * 0.5f;
+            float At(float height) => level + sign * height; // height above the walking surface
+            parts.Add(Box("Bridge Deck", Axes3(k, mid, a, At(-0.175f), w, wPos), Axes3(k, span, a, 0.35f, w, 2.6f), PavilionMat.Wood));
+            parts.Add(Box("Bridge Beam", Axes3(k, mid, a, At(-0.55f), w, wPos), Axes3(k, span, a, 0.4f, w, 0.6f), PavilionMat.Lacquer));
+            for (int side = -1; side <= 1; side += 2)
+            {
+                float rw = wPos + side * 1.24f;
+                parts.Add(Box("Bridge Rail", Axes3(k, mid, a, At(0.95f), w, rw), Axes3(k, span, a, 0.1f, w, 0.12f), PavilionMat.Wood));
+                int posts = Mathf.Max(1, Mathf.FloorToInt(span / 2f));
+                for (int i = 0; i <= posts; i++)
+                {
+                    float t = s0 + span * i / posts;
+                    bool lantern = i % 2 == 0;
+                    float h = lantern ? 1.3f : 0.95f;
+                    parts.Add(Box("Bridge Post", Axes3(k, t, a, At(h * 0.5f), w, rw), Axes3(k, 0.12f, a, h, w, 0.12f), PavilionMat.Wood));
+                    if (lantern)
+                        parts.Add(Box("Bridge Lantern", Axes3(k, t, a, At(1.45f), w, rw), Axes3(k, 0.28f, a, 0.3f, w, 0.28f), PavilionMat.Lantern, collide: false));
+                }
+            }
         }
 
         void BuildSide(Room r, int s)
@@ -517,6 +907,7 @@ namespace GravityPortals
                 P(r, "Gazebo Roof", center + Vector3.up * 3.35f, SizeAlong(along, platform + 0.6f, 0.3f, platform + 0.6f), PavilionMat.Wood);
             }
             r.SpawnSpots.Add(center + along * -1.5f);
+            r.Headroom.Add(new Bounds(center + Vector3.up * 1.6f, SizeAlong(along, platform, 3.2f, platform)));
             r.LightSpots.Add((center + Vector3.up * 2.6f, 10f, 1.6f));
         }
 
@@ -752,7 +1143,7 @@ namespace GravityPortals
                     });
                 }
                 foreach (var (pos, range, intensity) in r.LightSpots)
-                    layout.Lights.Add(new PavilionLight { Position = r.World(pos), Range = range, Intensity = intensity, Color = new Color(1f, 0.72f, 0.48f) });
+                    layout.Lights.Add(new PavilionLight { Position = r.World(pos), Range = range, Intensity = intensity * 1.35f, Color = new Color(1f, 0.74f, 0.5f) });
                 foreach (var s in r.SpawnSpots)
                 {
                     // Face the first door, else along the room.
@@ -766,6 +1157,26 @@ namespace GravityPortals
                 var bounds = new Bounds(r.World(r.LocalBounds.center), Abs(r.Rotation * r.LocalBounds.size));
                 layout.Rooms.Add(new PavilionRoomInfo { Name = r.Name, Bounds = bounds, Up = r.Up, Doors = r.DoorCount });
             }
+
+            foreach (var b in buildings)
+            {
+                foreach (var p in b.Parts)
+                {
+                    layout.Boxes.Add(new PavilionBox
+                    {
+                        Name = $"{b.Name}: {p.Name}",
+                        Center = b.World(p.Center),
+                        Size = p.Size,
+                        Rotation = b.Rotation * p.Rotation,
+                        Material = p.Mat,
+                        Collide = p.Collide,
+                        Visible = p.Visible,
+                    });
+                }
+                layout.Buildings.Add(new Bounds(b.World(b.LocalBounds.center), Abs(b.Rotation * b.LocalBounds.size)));
+            }
+            layout.Boxes.AddRange(connectorBoxes);
+            layout.Connectors.AddRange(connectorBounds);
 
             foreach (var e in edges)
             {

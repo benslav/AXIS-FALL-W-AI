@@ -119,15 +119,15 @@ MonoBehaviour:
   cameraEaseMinSpeed: 150
   crouchHeight: 1.1
   crouchEyeHeight: 0.4
-  crouchSpeed: 4.5
+  crouchSpeed: 5
   slideStartSpeed: 8
-  slideBoost: 15
-  slideMaxBoostedSpeed: 20
-  slideFriction: 15
+  slideBoost: 3
+  slideMaxBoostedSpeed: 15
+  slideFriction: 4.5
   slideEndSpeed: 4.5
-  bulletJumpSpeed: 18
-  bulletJumpLift: 12
-  grappleRange: 45
+  bulletJumpSpeed: 15
+  bulletJumpLift: 9.5
+  grappleRange: 1000
   grappleYankSpeed: 7
   grapplePullAcceleration: 48
   grapplePullSpeed: 26
@@ -149,7 +149,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d5a57f767e5e46a458fc5d3c628d0cbb, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Unity.Netcode.Runtime::Unity.Netcode.NetworkObject
-  GlobalObjectIdHash: 2486722892
+  GlobalObjectIdHash: 586048751
   InScenePlacedSourceGlobalObjectIdHash: 0
   m_InScenePlacedDisabledByDefault: 0
   DeferredDespawnTick: 0
