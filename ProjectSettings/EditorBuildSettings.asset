@@ -29,4 +29,7 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/GravityPortals/Scenes/HollowFortress.unity
     guid: 935a0571ee30a8f419870b3e1dd55676
+  - enabled: 1
+    path: Assets/GravityPortals/Scenes/Skybridge.unity
+    guid: ae0254d383811b04787b215c780e4d6f
   m_configObjects: {}

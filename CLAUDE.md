@@ -43,6 +43,9 @@ Each has an `EditorPrefs` version key; bumping its `Version` const makes it rebu
   engine-only calls like `Bounds.Contains` in the checker)
 - `HollowFortressBuilder` (hollow cube, a full arena on all six inner faces round a void; layout data in
   `FortressLayout`, one colour palette per face, breakable shoji screens via `BreakableScreen` + `PlayerCombat`)
+- `SkybridgeBuilder` (folded space station: floor and ceiling 40 m apart joined by a hull bend on +X, ~10 scaffolding
+  bridges at random spanning floor to ceiling, sideways gravity on their 26 m walkways with airlock doors at both ends;
+  floor and ceiling furnished separately at random; layout data in `SkybridgeLayout`, fixed `Seed`)
 - `PortalTestLabBuilder` (24 test rooms; signs show expected landings computed with `GravityAfterPass`)
 - `MainMenuBuilder` (menu/lobby scene, `LobbyState` prefab, session prefab list)
 
