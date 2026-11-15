@@ -21,25 +21,30 @@ namespace GravityPortals
     /// </summary>
     public static class MobiusSpinLayout
     {
-        public const float OuterRadius = 40f;   // the outer walkway's surface (you stand on the inside)
-        public const float InnerRadius = 24f;   // the inner corridor's surface (you stand on the outside)
-        public const float HalfWidth = 8f;      // both rings are 16 m wide along the axis
-        public const int Segments = 64;
+        /// <summary>The whole station is built at this scale (players, doors and crates stay their own size).</summary>
+        public const float S = 1.5f;
+        public const float OuterRadius = 40f * S;   // the outer walkway's surface (you stand on the inside)
+        public const float InnerRadius = 24f * S;   // the inner corridor's surface (you stand on the outside)
+        public const float HalfWidth = 8f * S;      // both rings are 24 m wide along the axis
+        public const int Segments = 96;
         public const float OuterDoorAngle = 90f, InnerDoorAngle = 270f;
-        public const float InnerVoidRadius = 18f, OuterVoidRadius = 46f;
-        public const float HubRadius = 12f;      // the glass hub's inside surface (you stand on the inside)
-        public const float TubeRadius = 2f;      // spoke tubes (inner ring to hub): inside of the wall
-        public const float LipRadius = 1f;       // the rounded edge at each end of a tube (= the inner ring's thickness)
+        public const float InnerVoidRadius = 18f * S, OuterVoidRadius = 46f * S;
+        public const float HubRadius = 12f * S;      // the glass hub's inside surface (you stand on the inside)
+        public const float TubeRadius = 2f * S;      // spoke tubes (inner ring to hub): inside of the wall (6 m across)
+        public const float LipRadius = 2.5f * S;     // the rounded edge at each end of a tube: wide, so the turn onto the wall is gentle
         public static readonly float[] SpokeAngles = { 45f, 135f, 225f, 315f };
         /// <summary>The steel collar round each tube's hole in the glass reaches this far round the
         /// hub from the tube's centre line (degrees).</summary>
-        public const float HubHoleAngle = 28f;
+        public const float HubHoleAngle = 34f;
         /// <summary>The inner ring is cut away round each tube mouth out to this distance from the
         /// tube's centre line; the mouth's rim strips fill it.</summary>
-        public const float RimRadius = 5.7f;
+        public const float RimRadius = (2f + 2.5f + 2.7f) * S;
         public const float OuterHubDoorAngle = 270f;
+        /// <summary>The twist gates: as wide as the ring between its rails, this tall, and their
+        /// hidden slab this thick (so the portals on its two faces never overlap a body stepping out).</summary>
+        public const float GateHeight = 4.5f, GateThickness = 0.3f;
 
-        public static readonly Bounds VoidBounds = new Bounds(Vector3.zero, new Vector3(110f, 110f, 60f));
+        public static readonly Bounds VoidBounds = new Bounds(Vector3.zero, new Vector3(110f, 110f, 60f) * S);
 
         const int MatOuterHull = SkybridgeLayout.MatHullFloor, MatInnerHull = SkybridgeLayout.MatHullCeiling,
             MatSteel = SkybridgeLayout.MatSteel, MatHazard = SkybridgeLayout.MatHazard, MatDark = SkybridgeLayout.MatDarkSteel,
@@ -126,7 +131,7 @@ namespace GravityPortals
                         RingFrame(outer, a);
                         float chord = outer ? outerChord : innerChord;
                         int glow = outer ? MatOuterGlow : MatInnerGlow;
-                        bool mouth = !outer && SpokeAngles.Any(sa => Mathf.Abs(Mathf.DeltaAngle(a, sa)) < 18f);
+                        bool mouth = !outer && SpokeAngles.Any(sa => Mathf.Abs(Mathf.DeltaAngle(a, sa)) < 21f);
                         if (!mouth)
                             B("Ring", new Vector3(0, -0.5f, 0), new Vector3(2f * HalfWidth + 0.4f, 1f, chord), outer ? MatOuterHull : MatInnerHull);
                         else
@@ -144,8 +149,8 @@ namespace GravityPortals
                     if (k % 5 == 0)
                     {
                         // Warm lights over the outer walkway, cool ones over the inner corridor.
-                        Layout.Lights.Add(new PavilionLight { Position = Out(a) * (OuterRadius - 6f), Range = 16f, Intensity = 1.8f, Color = new Color(1f, 0.78f, 0.55f) });
-                        Layout.Lights.Add(new PavilionLight { Position = Out(a) * (InnerRadius + 6f), Range = 16f, Intensity = 1.8f, Color = new Color(0.55f, 0.8f, 1f) });
+                        Layout.Lights.Add(new PavilionLight { Position = Out(a) * (OuterRadius - 6f * S), Range = 16f * S, Intensity = 1.8f, Color = new Color(1f, 0.78f, 0.55f) });
+                        Layout.Lights.Add(new PavilionLight { Position = Out(a) * (InnerRadius + 6f * S), Range = 16f * S, Intensity = 1.8f, Color = new Color(0.55f, 0.8f, 1f) });
                     }
                 }
             }
@@ -154,7 +159,7 @@ namespace GravityPortals
             /// the ones the mouth's rim strips cover (in the current ring frame).</summary>
             void MouthSegment(float chord)
             {
-                const int Cols = 24, Rows = 4;
+                const int Cols = 24, Rows = 3;
                 float tw = (2f * HalfWidth + 0.4f) / Cols, th = chord / Rows;
                 for (int i = 0; i < Cols; i++)
                     for (int j = 0; j < Rows; j++)
@@ -164,7 +169,7 @@ namespace GravityPortals
                         bool covered = SpokeAngles.Any(sa =>
                         {
                             Vector3 e = Out(sa);
-                            return Vector3.Dot(p, e) > 0f && (p - e * Vector3.Dot(p, e)).magnitude < RimRadius - 0.5f;
+                            return Vector3.Dot(p, e) > 0f && (p - e * Vector3.Dot(p, e)).magnitude < RimRadius - 0.8f;
                         });
                         if (!covered) B("Ring Tile", local + new Vector3(0, -0.5f, 0), new Vector3(tw + 0.02f, 1f, th + 0.02f), MatInnerHull);
                     }
@@ -172,29 +177,61 @@ namespace GravityPortals
 
             // ---------------------------------------------------------------- the twist
 
-            /// <summary>One door pair: the top of the outer walkway to the bottom of the inner corridor.
-            /// Each is upright on its own ring, so you come out standing with the other side's gravity.</summary>
+            /// <summary>One gate pair: the top of the outer walkway to the bottom of the inner corridor.
+            /// Each gate spans its ring from rail to rail and stands free, so you can walk through it
+            /// from either direction: it is two portals back to back, front linked to front and back
+            /// to back. Each is upright on its own ring, so you come out standing with the other
+            /// side's gravity.</summary>
             void Twist()
             {
                 RingFrame(true, OuterDoorAngle);
-                var outerDoor = Door("Outer Twist Door");
+                var (outerFront, outerBack) = Gate("Outer Twist Gate");
                 RingFrame(false, InnerDoorAngle);
-                var innerDoor = Door("Inner Twist Door");
-                outerDoor.Color = innerDoor.Color = new Color(0.65f, 0.45f, 1f);
-                outerDoor.Link = 1;
-                innerDoor.Link = 0;
-                Layout.Portals.Add(outerDoor);
-                Layout.Portals.Add(innerDoor);
+                var (innerFront, innerBack) = Gate("Inner Twist Gate");
+                int first = Layout.Portals.Count;
+                outerFront.Link = first + 2; outerBack.Link = first + 3;
+                innerFront.Link = first; innerBack.Link = first + 1;
+                Layout.Portals.Add(outerFront); Layout.Portals.Add(outerBack);
+                Layout.Portals.Add(innerFront); Layout.Portals.Add(innerBack);
+            }
+
+            /// <summary>A free-standing gate across the whole ring in the current ring frame: a hidden
+            /// slab between the rails with a portal on each face, posts at the rails and a header
+            /// beam over the top.</summary>
+            (PavilionPortal front, PavilionPortal back) Gate(string name)
+            {
+                float w = 2f * (HalfWidth - 0.2f), h = GateHeight, t = GateThickness;
+                B("Twist Gate", new Vector3(0, h * 0.5f, 0), new Vector3(w, h, t), MatDark, visible: false);
+                for (int s = -1; s <= 1; s += 2)
+                {
+                    B("Twist Gate Post", new Vector3(s * HalfWidth, (h + 0.4f) * 0.5f, 0), new Vector3(0.4f, h + 0.4f, 0.6f), MatDark);
+                    for (int f = -1; f <= 1; f += 2)
+                        B("Twist Jamb", new Vector3(s * HalfWidth, h * 0.5f, f * 0.31f), new Vector3(0.2f, h, 0.02f), MatHazard, collide: false);
+                }
+                B("Twist Gate Header", new Vector3(0, h + 0.2f, 0), new Vector3(2f * HalfWidth + 0.4f, 0.4f, 0.6f), MatDark);
+                var color = new Color(0.65f, 0.45f, 1f);
+                PavilionPortal Face(int f)
+                {
+                    B("Twist Light", new Vector3(0, h + 0.2f, f * 0.31f), new Vector3(w, 0.15f, 0.02f), MatLight, collide: false);
+                    Layout.Lights.Add(new PavilionLight { Position = W(new Vector3(0, 3.5f, f * 3f)), Range = 14f, Intensity = 1.5f, Color = new Color(0.8f, 0.6f, 1f) });
+                    return new PavilionPortal
+                    {
+                        Name = $"{name} ({(f > 0 ? "front" : "back")})", Position = W(new Vector3(0, h * 0.5f, f * (t * 0.5f + 0.01f))),
+                        Normal = rot * (f > 0 ? Vector3.forward : Vector3.back), Up = rot * Vector3.up,
+                        Size = new Vector2(w, h), Doorway = true, Link = -1, Color = color,
+                    };
+                }
+                return (Face(1), Face(-1));
             }
 
             /// <summary>A door into the glass hub from the outer ring (the inner ring has the spoke
-            /// tubes), to a door standing on the hub's equator. In the hub down is out from the
-            /// centre, so you stand on the glass.</summary>
+            /// tubes), to a door standing at the hub's top pole, as far as it can be from every
+            /// tube's hole. In the hub down is out from the centre, so you stand on the glass.</summary>
             void HubDoors()
             {
                 RingFrame(true, OuterHubDoorAngle);
                 var outerRing = Door("Outer Hub Door");
-                HubFrame(180f);
+                HubPoleFrame();
                 var hub = Door("Hub Door to Outer Ring");
                 int first = Layout.Portals.Count;
                 outerRing.Color = hub.Color = new Color(0.3f, 0.9f, 1f);
@@ -202,14 +239,12 @@ namespace GravityPortals
                 Layout.Portals.Add(outerRing); Layout.Portals.Add(hub);
             }
 
-            /// <summary>A frame standing on the inside of the hub's glass at a point on its equator,
-            /// facing along the axis (+Z).</summary>
-            void HubFrame(float degrees)
+            /// <summary>A frame standing on the inside of the hub's glass at its +Z pole, facing +X.</summary>
+            void HubPoleFrame()
             {
-                Vector3 d = Out(degrees);
                 frameName = "Hub";
-                origin = d * HubRadius;
-                rot = PavilionLayout.Basis(Vector3.forward, -d);
+                origin = Vector3.forward * HubRadius;
+                rot = PavilionLayout.Basis(Vector3.right, Vector3.back);
             }
 
             PavilionPortal Door(string name)
@@ -248,7 +283,8 @@ namespace GravityPortals
                     {
                         float psi = (i + 0.5f) * dPsi * Mathf.Deg2Rad;
                         Vector3 w = Vector3.forward * Mathf.Cos(psi) + along * Mathf.Sin(psi); // out from the tube's centre line
-                        float sR = field.RingLipCentre(mouth * Mathf.Sin(psi));
+                        Vector3 cR = field.RingLipCore(e, along, psi);
+                        float sR = Vector3.Dot(cR, e);
 
                         // The wall: hidden flat strips just behind the smooth surface you walk on (they
                         // only stop anything fast punching through it).
@@ -261,27 +297,33 @@ namespace GravityPortals
                                 MatInnerGlow, collide: false, worldRot: PavilionLayout.Basis(e, -w), world: true);
 
                         // The ring's lip: from the mouth's top edge, curling down onto the wall.
-                        Vector3 cR = e * sR + w * mouth;
-                        Lip(cR, e, -w, e, half);
+                        // (its core curve, cR, sits one lip radius under the ring floor)
+                        Lip(cR, Flat(cR), -w, e, half);
                         // The hub's lip: from the wall, curling out onto the glass.
                         Vector3 cH = e * sH + w * mouth;
                         Lip(cH, -w, -cH.normalized, e, half);
 
-                        // A flat rim round the hole, two strips deep, following the ring's curve.
-                        for (int k = 0; k < 2; k++)
+                        // A rim of ring floor round the hole, from the lip's top edge out to RimRadius,
+                        // following the ring's curve (the ring segments there leave it out).
+                        Vector3 top = cR + Flat(cR) * l;
+                        float sideEnd = RimRadius * Mathf.Sin(psi);
+                        Vector3 end = e * Mathf.Sqrt(InnerRadius * InnerRadius - sideEnd * sideEnd) + w * RimRadius;
+                        Vector3 OnRing(Vector3 q) => Flat(q) * InnerRadius + Vector3.forward * q.z;
+                        const int RimStrips = 3;
+                        for (int k = 0; k < RimStrips; k++)
                         {
-                            float r0 = mouth + 1.35f * k, rm = r0 + 0.675f;
-                            float side = rm * Mathf.Sin(psi);
-                            Vector3 q = e * Mathf.Sqrt(InnerRadius * InnerRadius - side * side) + w * rm;
-                            Vector3 up = Flat(q), fwd = (w - up * Vector3.Dot(w, up)).normalized;
-                            B("Mouth Rim", q - up * 0.5f, new Vector3(2f * (r0 + 1.35f) * Mathf.Tan(half) + 0.05f, 1f, 1.4f), k == 0 ? MatDark : MatInnerHull,
-                                worldRot: PavilionLayout.Basis(fwd, up), world: true);
+                            Vector3 q0 = OnRing(Vector3.Lerp(top, end, k / (float)RimStrips)), q1 = OnRing(Vector3.Lerp(top, end, (k + 1f) / RimStrips));
+                            Vector3 mid = OnRing((q0 + q1) * 0.5f), up = Flat(mid);
+                            Vector3 fwd = Vector3.ProjectOnPlane(q1 - q0, up).normalized;
+                            float farFromAxis = (q1 - e * Vector3.Dot(q1, e)).magnitude;
+                            B("Mouth Rim", mid - up * 0.5f, new Vector3(2f * (farFromAxis + 0.1f) * Mathf.Tan(half) + 0.05f, 1f, (q1 - q0).magnitude + 0.1f),
+                                k == 0 ? MatDark : MatInnerHull, worldRot: PavilionLayout.Basis(fwd, up), world: true);
                         }
                         if (i % 2 == 0)
                         {
-                            Vector3 q = e * Mathf.Sqrt(InnerRadius * InnerRadius - Mathf.Pow((mouth + 0.15f) * Mathf.Sin(psi), 2f)) + w * (mouth + 0.15f);
+                            Vector3 q = OnRing(Vector3.Lerp(top, end, 0.04f));
                             B("Mouth Glow", q + Flat(q) * 0.01f, new Vector3(0.6f, 0.02f, 0.12f), MatHazard, collide: false,
-                                worldRot: PavilionLayout.Basis(w, Flat(q)), world: true);
+                                worldRot: PavilionLayout.Basis(Vector3.ProjectOnPlane(end - top, Flat(q)).normalized, Flat(q)), world: true);
                         }
                     }
 
@@ -303,8 +345,8 @@ namespace GravityPortals
                     }
 
                     TubeSurface(field, e, along);
-                    Layout.Lights.Add(new PavilionLight { Position = e * ((sH + InnerRadius) * 0.5f), Range = 9f, Intensity = 1.4f, Color = new Color(0.6f, 0.85f, 1f) });
-                    Layout.Lights.Add(new PavilionLight { Position = e * (InnerRadius + 2f), Range = 7f, Intensity = 1.2f, Color = new Color(1f, 0.85f, 0.4f) });
+                    Layout.Lights.Add(new PavilionLight { Position = e * ((sH + InnerRadius) * 0.5f), Range = 9f * S, Intensity = 1.4f, Color = new Color(0.6f, 0.85f, 1f) });
+                    Layout.Lights.Add(new PavilionLight { Position = e * (InnerRadius + 2f * S), Range = 7f * S, Intensity = 1.2f, Color = new Color(1f, 0.85f, 0.4f) });
                 }
             }
 
@@ -315,7 +357,7 @@ namespace GravityPortals
             /// surface, so shots pass through them.</summary>
             void TubeSurface(SpinField field, Vector3 e, Vector3 along)
             {
-                const int Around = 144, LipRows = 12, WallRows = 4;
+                const int Around = 144, LipRows = 20, WallRows = 4;
                 float mouth = field.MouthRadius, sH = field.HubLipCentre, l = LipRadius;
                 var steel = new PavilionSurface { Name = $"{frameName}: Tube", Material = (PavilionMat)MatSteel };
                 var glass = new PavilionSurface { Name = $"{frameName}: Glass", Material = (PavilionMat)MatGlass };
@@ -331,9 +373,9 @@ namespace GravityPortals
                 {
                     float psi = j * 2f * Mathf.PI / Around;
                     Vector3 w = Vector3.forward * Mathf.Cos(psi) + along * Mathf.Sin(psi);
-                    Vector3 cR = e * field.RingLipCentre(mouth * Mathf.Sin(psi)) + w * mouth, cH = e * sH + w * mouth;
+                    Vector3 cR = field.RingLipCore(e, along, psi), cH = e * sH + w * mouth;
                     var col = new List<(Vector3, Vector3, bool)>();
-                    for (int r = 0; r <= LipRows; r++) { var d = Slerp(e, -w, r / (float)LipRows); col.Add((cR + d * l, d, false)); }
+                    for (int r = 0; r <= LipRows; r++) { var d = Slerp(Flat(cR), -w, r / (float)LipRows); col.Add((cR + d * l, d, false)); }
                     float s0 = Vector3.Dot(cR, e);
                     for (int r = 1; r <= WallRows; r++) col.Add((e * Mathf.Lerp(s0, sH, r / (float)WallRows) + w * TubeRadius, -w, true));
                     for (int r = 1; r <= LipRows; r++) { var d = Slerp(-w, -cH.normalized, r / (float)LipRows); col.Add((cH + d * l, d, false)); }
@@ -386,17 +428,19 @@ namespace GravityPortals
             /// circumference wide.</summary>
             void Lip(Vector3 core, Vector3 d0, Vector3 d1, Vector3 tubeAxis, float halfSide)
             {
-                const int Steps = 6;
+                const int Steps = 10;
                 float theta = Mathf.Acos(Mathf.Clamp(Vector3.Dot(d0, d1), -1f, 1f));
                 Vector3 D(float t) => (Mathf.Sin((1f - t) * theta) * d0 + Mathf.Sin(t * theta) * d1) / Mathf.Sin(theta);
                 for (int j = 0; j < Steps; j++)
                 {
                     float t = (j + 0.5f) / Steps;
                     Vector3 d = D(t), tangent = (D(t + 0.5f / Steps) - D(t - 0.5f / Steps)).normalized;
-                    Vector3 surface = core + d * LipRadius;
-                    float fromAxis = (surface - tubeAxis * Vector3.Dot(surface, tubeAxis)).magnitude;
+                    // As wide round the tube as its widest end needs (the lip's distance from the
+                    // tube's centre line changes along it).
+                    float FromAxis(float tt) { Vector3 q = core + D(tt) * LipRadius; return (q - tubeAxis * Vector3.Dot(q, tubeAxis)).magnitude; }
+                    float fromAxis = Mathf.Max(FromAxis(j / (float)Steps), FromAxis((j + 1f) / Steps));
                     B("Lip", core + d * (LipRadius - 0.3f),
-                        new Vector3(2f * (fromAxis + 0.1f) * Mathf.Tan(halfSide) + 0.05f, 0.5f, 2f * LipRadius * Mathf.Tan(theta / Steps * 0.5f) + 0.05f),
+                        new Vector3(2f * (fromAxis + 0.1f) * Mathf.Tan(halfSide) + 0.2f, 0.5f, 2f * LipRadius * Mathf.Tan(theta / Steps * 0.5f) + 0.05f),
                         MatDark, worldRot: PavilionLayout.Basis(tangent, d), world: true, visible: false);
                 }
             }
@@ -436,7 +480,7 @@ namespace GravityPortals
                         worldRot: PavilionLayout.Basis(Vector3.right, -s * Vector3.forward), world: true);
                 }
                 B("Hub Core", Vector3.zero, new Vector3(1.6f, 1.6f, 1.6f), MatLight, collide: false, world: true);
-                Layout.Lights.Add(new PavilionLight { Position = Vector3.zero, Range = 16f, Intensity = 1.6f, Color = new Color(0.85f, 0.95f, 1f) });
+                Layout.Lights.Add(new PavilionLight { Position = Vector3.zero, Range = 16f * S, Intensity = 1.6f, Color = new Color(0.85f, 0.95f, 1f) });
             }
 
             // ---------------------------------------------------------------- cover and spawns
@@ -447,6 +491,7 @@ namespace GravityPortals
                 void Item(bool outer, float a, float x, string kind)
                 {
                     RingFrame(outer, a);
+                    x *= S; // placed across the band at the station's scale
                     switch (kind)
                     {
                         case "barrier":
@@ -480,15 +525,15 @@ namespace GravityPortals
                 foreach (var (a, x) in new[] { (345f, -2f), (0f, 2f), (12f, -2f), (76f, 3f), (115f, -3f), (182f, 2f) })
                     Spawn(false, a, x);
                 RingFrame(true, 152f);
-                Layout.Props.Add(new PavilionMarker { Position = W(new Vector3(3f, 0.5f, 0)), Rotation = rot });
+                Layout.Props.Add(new PavilionMarker { Position = W(new Vector3(3f * S, 0.5f, 0)), Rotation = rot });
                 RingFrame(false, 160f);
-                Layout.Props.Add(new PavilionMarker { Position = W(new Vector3(-3f, 0.5f, 0)), Rotation = rot });
+                Layout.Props.Add(new PavilionMarker { Position = W(new Vector3(-3f * S, 0.5f, 0)), Rotation = rot });
             }
 
             void Spawn(bool outer, float a, float x)
             {
                 RingFrame(outer, a);
-                Layout.Spawns.Add(new PavilionMarker { Position = W(new Vector3(x, 0.95f, 0)), Rotation = rot });
+                Layout.Spawns.Add(new PavilionMarker { Position = W(new Vector3(x * S, 0.95f, 0)), Rotation = rot });
             }
 
             // ---------------------------------------------------------------- structure and space
@@ -498,7 +543,7 @@ namespace GravityPortals
             void Structure()
             {
                 frameName = "Station";
-                float strutZ = HalfWidth + 2.5f;
+                float strutZ = HalfWidth + 2.5f * S;
                 for (int k = 0; k < 4; k++)
                 {
                     float a = 45f + 90f * k;
@@ -509,7 +554,7 @@ namespace GravityPortals
                         float r0 = InnerRadius - 1f, r1 = OuterRadius + 1f;
                         B("Strut", o * ((r0 + r1) * 0.5f) + Vector3.forward * z, new Vector3(0.8f, 0.8f, r1 - r0), MatSteel, worldRot: r, world: true);
                         // Out from the glass hub's side (it is about 7 m from the axis at this height).
-                        const float h0 = 7.5f;
+                        const float h0 = 10f; // (the hub's glass is about 9.7 m from the axis at the struts' height)
                         B("Hub Spoke", o * ((h0 + r0) * 0.5f) + Vector3.forward * z, new Vector3(0.6f, 0.6f, r0 - h0), MatSteel, collide: false, worldRot: r, world: true);
                     }
                 }
@@ -525,7 +570,7 @@ namespace GravityPortals
                     var d = new Vector3((float)random.NextDouble() * 2f - 1f, (float)random.NextDouble() * 2f - 1f, (float)random.NextDouble() * 2f - 1f);
                     float m = d.magnitude;
                     if (m < 0.2f || m > 1f) continue;
-                    float r = 160f + (float)random.NextDouble() * 60f, size = 0.3f + (float)random.NextDouble() * 0.7f;
+                    float r = (160f + (float)random.NextDouble() * 60f) * S, size = 0.3f + (float)random.NextDouble() * 0.7f;
                     B("Star", d / m * r, Vector3.one * size, MatLight, collide: false, world: true);
                     made++;
                 }

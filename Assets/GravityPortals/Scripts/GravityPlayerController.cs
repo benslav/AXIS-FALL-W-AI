@@ -165,7 +165,7 @@ namespace GravityPortals
         /// <summary>Where shots come from: the eye.</summary>
         public Vector3 EyePosition => transform.position + (bodyRotation * Vector3.up) * (crouching ? crouchEyeHeight : eyeHeight);
         /// <summary>Where shots go: the view direction including recoil.</summary>
-        public Quaternion AimRotation => bodyRotation * Quaternion.Euler(pitch - recoilPitch, recoilYaw, 0f);
+        public Quaternion AimRotation => viewEase * bodyRotation * Quaternion.Euler(pitch - recoilPitch, recoilYaw, 0f);
         public float CapsuleHalfHeight => capsule.height * 0.5f;
         public float CapsuleRadius => capsule.radius;
         public override bool SimulatesLocally => IsLocallyControlled;
@@ -273,6 +273,7 @@ namespace GravityPortals
             }
 
             AlignToGravity(Time.deltaTime);
+            EaseViewOnCurves(Time.deltaTime);
 
             moveInput = alive ? new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical")) : Vector2.zero;
             sprinting = Input.GetKey(KeyCode.LeftShift);
@@ -314,11 +315,56 @@ namespace GravityPortals
             }
         }
 
+        // On curves (spin maps): the view's up eases after the body's through two smoothing stages,
+        // so the view's turn builds up and settles gently instead of starting and stopping where
+        // a curve starts and ends. Only the view (and aim, so the crosshair stays true) eases; the
+        // body and its collider follow gravity exactly.
+        [Tooltip("Spin maps: how quickly the view follows the floor round curves (lower = gentler, with more lag).")]
+        public float curveViewEase = 9f;
+        Vector3 viewUpStage1, viewUpStage2;
+        Quaternion viewEase = Quaternion.identity;
+        bool viewEaseReset = true;
+
+        void EaseViewOnCurves(float dt)
+        {
+            Vector3 bodyUp = bodyRotation * Vector3.up;
+            if (SpinGravity.Current == null || viewEaseReset)
+            {
+                viewUpStage1 = viewUpStage2 = bodyUp;
+                viewEase = Quaternion.identity;
+                viewEaseReset = false;
+                return;
+            }
+            float k = 1f - Mathf.Exp(-curveViewEase * dt);
+            viewUpStage1 = Vector3.Slerp(viewUpStage1, bodyUp, k).normalized;
+            viewUpStage2 = Vector3.Slerp(viewUpStage2, viewUpStage1, k).normalized;
+            // Never let the view fall too far behind (going fast over a tight curve): pull it along
+            // instead, so it never has to jump to catch up.
+            viewUpStage1 = Limit(viewUpStage1, bodyUp, CurveViewMaxLag * 0.5f);
+            viewUpStage2 = Limit(viewUpStage2, bodyUp, CurveViewMaxLag);
+            viewEase = Quaternion.FromToRotation(bodyUp, viewUpStage2);
+        }
+
+        const float CurveViewMaxLag = 35f;
+
+        /// <summary><paramref name="v"/>, turned toward <paramref name="target"/> just enough to be
+        /// within <paramref name="maxAngle"/> of it.</summary>
+        static Vector3 Limit(Vector3 v, Vector3 target, float maxAngle)
+        {
+            float angle = Vector3.Angle(v, target);
+            if (angle <= maxAngle) return v;
+            return Vector3.Slerp(target, v, maxAngle / angle).normalized;
+        }
+
         /// <summary>
         /// Eases the body's up toward the gravity "up" after a portal changes it.
         /// The direction you're looking stays fixed in the world the whole time; only the
         /// horizon rolls around it until you're upright. So the view you had through the
         /// portal never swings away, it just straightens out.
+        ///
+        /// On a spin map, gravity also turns gradually as you walk (round a ring, through a
+        /// tube). Then the whole view turns with you instead, the way it would on a real curved
+        /// floor: looking straight ahead, you keep looking straight ahead along the curve.
         /// </summary>
         void AlignToGravity(float dt)
         {
@@ -330,6 +376,19 @@ namespace GravityPortals
             Vector3 look = bodyRotation * Quaternion.Euler(pitch, 0f, 0f) * Vector3.forward;
 
             float step = Mathf.Max(angle * (1f - Mathf.Exp(-cameraEaseRate * dt)), cameraEaseMinSpeed * dt);
+
+            // On spin maps gravity only ever jumps through a portal, and a pass carries the body
+            // round with it, so any gap here is the floor curving: always turn with it (falling back
+            // to the portal behaviour mid-curve held the view still, then lurched it back).
+            if (SpinGravity.Current != null && angle < 170f)
+            {
+                // Turn the body (and so the view, pitch kept) round the same axis as its up.
+                Quaternion turn = Quaternion.AngleAxis(Mathf.Min(step, angle), Vector3.Cross(currentUp, targetUp).normalized);
+                if (step >= angle) turn = Quaternion.FromToRotation(currentUp, targetUp);
+                Quaternion turned = turn * bodyRotation;
+                bodyRotation = Quaternion.LookRotation(turned * Vector3.forward, turned * Vector3.up); // keep it clean over many small turns
+                return;
+            }
             Vector3 newUp;
             if (step >= angle)
             {
@@ -416,6 +475,25 @@ namespace GravityPortals
 
         // ------------------------------------------------------------------ physics
 
+        [Tooltip("Spin maps: how long after leaving the floor (without jumping) your momentum still turns with it.")]
+        public float curveHoldTime = 0.3f;
+
+        /// <summary>
+        /// Spin maps: when gravity turns gradually under you (over the rounded rim of a tube, round
+        /// a ring), turn your momentum with it, as if the floor were a track you're held to. Without
+        /// this, running fast over a convex curve throws you off it (the floor drops away faster
+        /// than gravity pulls you down), across the tube and into the far wall. Only while you're
+        /// on the floor or just left it without jumping: a jump flies free.
+        /// </summary>
+        void FollowCurve(Vector3 before, Vector3 after)
+        {
+            if (SpinGravity.Current == null || jumpedSinceGrounded) return;
+            if (!grounded && Time.time - lastGroundedTime > curveHoldTime) return;
+            float turn = Vector3.Angle(before, after);
+            if (turn < 0.01f || turn > 20f) return; // nothing to follow, or a flip rather than a curve
+            Body.linearVelocity = Quaternion.FromToRotation(before, after) * Body.linearVelocity;
+        }
+
         void FixedUpdate()
         {
             if (!IsLocallyControlled || Body.isKinematic) return;
@@ -425,7 +503,9 @@ namespace GravityPortals
             Body.rotation = bodyRotation;
 
             // Spin maps only: down follows the station's spin field (out from or in toward its axis).
+            Vector3 gravityBefore = gravityDirection;
             gravityDirection = SpinGravity.Apply(gravityDirection, Body.position);
+            FollowCurve(gravityBefore, gravityDirection);
             Vector3 gravityUp = -gravityDirection;
             UpdateGround(bodyRotation * Vector3.up, gravityUp);
 
@@ -945,6 +1025,7 @@ namespace GravityPortals
 
         protected override void OnTeleported(Portal from, Portal to, Quaternion newRotation)
         {
+            viewEaseReset = true; // through a portal the view is carried exactly; no curve easing across it
             // The view is carried through exactly (what you saw through the portal is what you
             // see now), then AlignToGravity eases the camera back upright. Seamless: no flash.
             // The rope can't follow you through a door, but a wrap wall is just the space
@@ -1001,6 +1082,7 @@ namespace GravityPortals
             bodyRotation = rotation;
             gravityDirection = gravity.sqrMagnitude > 0f ? gravity.normalized : Vector3.down;
             pitch = newPitch;
+            viewEaseReset = true; // placed somewhere new: no view easing from where you were
             grounded = false;
         }
 

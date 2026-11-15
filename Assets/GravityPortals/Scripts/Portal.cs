@@ -81,7 +81,27 @@ namespace GravityPortals
             BuildVisuals();
         }
 
-        void Start() => FindHosts();
+        void Start()
+        {
+            FindHosts();
+            FindBackToBack();
+        }
+
+        /// <summary>The portal on the other face of the same free-standing slab (a gate you can walk
+        /// through from either side), if there is one. Being just behind this portal then means
+        /// being in front of that one, not passing through this one.</summary>
+        public Portal BackToBack { get; private set; }
+
+        void FindBackToBack()
+        {
+            BackToBack = null;
+            foreach (var p in registry.Values)
+            {
+                if (p == this || Vector3.Dot(p.Normal, Normal) > -0.99f) continue;
+                Vector3 local = transform.InverseTransformPoint(p.transform.position);
+                if (local.z < 0f && local.z > -1f && Mathf.Abs(local.x) < 0.1f && Mathf.Abs(local.y) < 0.1f) { BackToBack = p; return; }
+            }
+        }
 
         // ------------------------------------------------------------------ exit gravity
 

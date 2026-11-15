@@ -4,7 +4,7 @@ using UnityEngine;
 
 /// <summary>
 /// "Möbius Spin" (stage 1 test): builds the scene from <see cref="MobiusSpinLayout"/> (two
-/// concentric rings with spin gravity and one twist door pair) in the Skybridge station style,
+/// concentric rings with spin gravity and one twist gate pair) in the Skybridge station style,
 /// plus the <see cref="SpinGravity"/> field and the void bounds.
 /// </summary>
 [InitializeOnLoad]
@@ -12,7 +12,7 @@ public static class MobiusSpinBuilder
 {
     const string ScenePath = "Assets/GravityPortals/Scenes/MobiusSpin.unity";
     const string VersionKey = "ClaudeTest.MobiusSpin.Version";
-    const int Version = 4; // 2: spokes and the glass hub; 3: spokes are tubes from the inner ring to the hub; 4: smooth tubes
+    const int Version = 7; // 2: spokes and the glass hub; 3: tubes from the inner ring to the hub; 4: smooth tubes; 5: wide exact lips, hub door at the pole; 6: whole station 1.5x; 7: full-width two-sided twist gates
     const string MeshPath = "Assets/GravityPortals/Meshes/MobiusSpinGeometry.asset";
 
     static MobiusSpinBuilder()

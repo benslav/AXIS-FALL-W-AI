@@ -172,7 +172,7 @@ namespace GravityPortals
             if (!passing && cam != null)
             {
                 Vector3 c = transform.InverseTransformPoint(cam.transform.position);
-                passing = c.z < 0.8f && c.z > -0.9f
+                passing = c.z < 0.8f && c.z > BehindReach(false)
                     && Mathf.Abs(c.x) < portal.size.x * 0.5f + 0.1f && Mathf.Abs(c.y) < portal.size.y * 0.5f + 0.1f;
             }
             // Thicken instantly (any delay can show a clipped frame), thin out gently.
@@ -182,6 +182,12 @@ namespace GravityPortals
             t.localPosition = new Vector3(0f, 0f, 0.01f - thickness * 0.5f);
             material.SetFloat(ThickId, passing ? 1f : 0f);
         }
+
+        /// <summary>How far behind the opening your eye still counts as "at" it (it can get there a
+        /// frame before the pass registers). Not at all for one face of a two-sided gate unless
+        /// you're passing through this face: just behind it is in front of the other face, and
+        /// drawing this face's view there shows the scene through the wrong side for a moment.</summary>
+        float BehindReach(bool passingThis) => portal.BackToBack != null && !passingThis ? 0f : -0.9f;
 
         void UpdateView(Camera main)
         {
@@ -205,7 +211,8 @@ namespace GravityPortals
             // eye is right at the opening, draw the portal on top of whatever is behind it.
             // (Done here, with the camera's final position for this frame.)
             Vector3 eye = transform.InverseTransformPoint(main.transform.position);
-            bool atOpening = eye.z < 0.15f && eye.z > -0.9f
+            var me0 = GravityPlayerController.Local;
+            bool atOpening = eye.z < 0.15f && eye.z > BehindReach(me0 != null && me0.IsIgnoring(portal))
                 && Mathf.Abs(eye.x) < portal.size.x * 0.5f + 0.1f && Mathf.Abs(eye.y) < portal.size.y * 0.5f + 0.1f;
             if (atOpening != drawOnTop)
             {

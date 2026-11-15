@@ -136,6 +136,8 @@ MonoBehaviour:
   grappleMaxSpeed: 38
   recoilRecovery: 9
   coyoteTime: 0.12
+  curveViewEase: 9
+  curveHoldTime: 0.3
   warningDistance: 4
 --- !u!114 &2380597298981049849
 MonoBehaviour:
