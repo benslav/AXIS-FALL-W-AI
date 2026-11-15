@@ -55,7 +55,7 @@ public static class SkybridgeBuilder
         Debug.Log($"[Skybridge] {layout.Boxes.Count} parts, {layout.Portals.Count} door portals, {layout.Spawns.Count} spawns.");
     }
 
-    static Material[] Materials()
+    internal static Material[] Materials()
     {
         var grid = GravityArenaBuilder.GridTexture();
         var m = new Material[SkybridgeLayout.MaterialCount];
@@ -73,7 +73,7 @@ public static class SkybridgeBuilder
         return m;
     }
 
-    static void Atmosphere()
+    internal static void Atmosphere()
     {
         RenderSettings.skybox = null;
         RenderSettings.fog = true;

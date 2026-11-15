@@ -32,4 +32,7 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/GravityPortals/Scenes/Skybridge.unity
     guid: ae0254d383811b04787b215c780e4d6f
+  - enabled: 1
+    path: Assets/GravityPortals/Scenes/MobiusSpin.unity
+    guid: 71dbf8a7b941b7242a76f91876e13d20
   m_configObjects: {}

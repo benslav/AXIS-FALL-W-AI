@@ -297,7 +297,8 @@ namespace GravityPortals
                 Vector3 local = i == 0 ? Vector3.zero : new Vector3(i % 2 == 0 ? -hx : hx, i < 3 ? -hy : hy, 0f);
                 Vector3 to = transform.TransformPoint(local) + portal.Normal * 0.05f;
                 if (!Physics.Linecast(from, to, out RaycastHit hit, ~0, QueryTriggerInteraction.Ignore)
-                    || hit.collider.attachedRigidbody != null) // players and crates don't hide a portal
+                    || hit.collider.attachedRigidbody != null // players and crates don't hide a portal
+                    || ShootThrough.Is(hit.collider))         // nor does glass
                 {
                     lastSeenTime = Time.time;
                     return true;

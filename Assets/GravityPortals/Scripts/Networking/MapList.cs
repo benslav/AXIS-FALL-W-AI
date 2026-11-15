@@ -37,7 +37,7 @@ namespace GravityPortals
                 if (i > 0 && char.IsUpper(c) && !char.IsUpper(sceneName[i - 1])) sb.Append(' ');
                 sb.Append(c);
             }
-            return sb.ToString().Replace("Tri Gravity", "Tri-Gravity");
+            return sb.ToString().Replace("Tri Gravity", "Tri-Gravity").Replace("Mobius", "Möbius");
         }
 
         public static bool InMenu => SceneManager.GetActiveScene().name == MenuScene;

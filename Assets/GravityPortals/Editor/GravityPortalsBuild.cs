@@ -29,6 +29,7 @@ public static class GravityPortalsBuild
         "Assets/GravityPortals/Scenes/ShiftingPavilion.unity",
         "Assets/GravityPortals/Scenes/HollowFortress.unity",
         "Assets/GravityPortals/Scenes/Skybridge.unity",
+        "Assets/GravityPortals/Scenes/MobiusSpin.unity",
         "Assets/GravityPortals/Scenes/PortalTestLab.unity",
     };
 

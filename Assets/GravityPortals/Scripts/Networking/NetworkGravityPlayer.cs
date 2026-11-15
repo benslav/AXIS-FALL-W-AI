@@ -266,11 +266,16 @@ namespace GravityPortals
             float allowed = maxValidatedSpeed * Mathf.Clamp(dt, 0.02f, 1f) + 1f;
             int teleports = (byte)(s.TeleportCount - accepted.TeleportCount);
 
+            // On a spin map gravity follows the spin field (same rule as the client), so it turns as
+            // you move; it still only changes sign (outward / inward) through a portal.
+            bool spin = SpinGravity.Current != null;
+            float gravityTolerance = spin ? 6f : 1f;
+
             if (teleports == 0)
             {
                 if (Vector3.Distance(s.Position, accepted.Position) > allowed) return false;
                 // Gravity only ever changes by going through a portal.
-                return Vector3.Angle(s.Gravity, accepted.Gravity) < 1f;
+                return SpinGravity.MatchesAlong(s.Gravity, accepted.Gravity, accepted.Position, s.Position, gravityTolerance);
             }
 
             var from = Portal.FindById(s.FromPortal);
@@ -281,8 +286,8 @@ namespace GravityPortals
             // one tick are rare; the position checks below still apply to those.)
             if (teleports == 1)
             {
-                Vector3 expected = Portal.GravityAfterPass(from, to, accepted.Gravity);
-                if (Vector3.Angle(s.Gravity, expected) > 1f) return false;
+                Vector3 expected = SpinGravity.Apply(Portal.GravityAfterPass(from, to, accepted.Gravity), s.Position);
+                if (Vector3.Angle(s.Gravity, expected) > gravityTolerance) return false;
             }
             // Must have been at the entrance (skip if several passes landed in one tick)...
             if (teleports == 1 && from.DistanceOutsideZone(accepted.Position) > allowed + 1f) return false;

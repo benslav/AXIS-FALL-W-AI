@@ -67,6 +67,24 @@ namespace GravityPortals
                 boxes.Add(go);
             }
 
+            // Smooth curved surfaces: their own mesh, and (if solid) a mesh collider of the same shape.
+            foreach (var s in layout.Surfaces)
+            {
+                var mesh = new Mesh { name = s.Name, indexFormat = IndexFormat.UInt32 };
+                mesh.SetVertices(s.Vertices);
+                mesh.SetNormals(s.Normals);
+                if (s.UVs.Count == s.Vertices.Count) mesh.SetUVs(0, s.UVs);
+                mesh.SetTriangles(s.Triangles, 0);
+                mesh.RecalculateBounds();
+                meshes.Add(mesh);
+                var go = new GameObject(s.Name);
+                go.transform.SetParent(root, false);
+                go.AddComponent<MeshFilter>().sharedMesh = mesh;
+                go.AddComponent<MeshRenderer>().sharedMaterial = materials[(int)s.Material];
+                if (s.Collide) go.AddComponent<MeshCollider>().sharedMesh = mesh;
+                boxes.Add(go);
+            }
+
             // What you bump into: invisible boxes.
             var colliderRoot = new GameObject("Colliders").transform;
             colliderRoot.SetParent(root, false);

@@ -552,8 +552,10 @@ namespace GravityPortals
             }
 
             var area = ArenaBounds.Current;
-            if (area == null || area.Contains(net.AcceptedState.Position)) return;
-            ServerFellIntoVoid();
+            Vector3 at = net.AcceptedState.Position;
+            bool fell = (area != null && !area.Contains(at))
+                || (SpinGravity.Current != null && SpinGravity.Current.OutOfBounds(at)); // off a spinning ring
+            if (fell) ServerFellIntoVoid();
         }
 
         void ServerFellIntoVoid()

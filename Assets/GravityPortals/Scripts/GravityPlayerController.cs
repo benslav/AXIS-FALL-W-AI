@@ -424,6 +424,8 @@ namespace GravityPortals
             float dt = Time.fixedDeltaTime;
             Body.rotation = bodyRotation;
 
+            // Spin maps only: down follows the station's spin field (out from or in toward its axis).
+            gravityDirection = SpinGravity.Apply(gravityDirection, Body.position);
             Vector3 gravityUp = -gravityDirection;
             UpdateGround(bodyRotation * Vector3.up, gravityUp);
 
@@ -955,6 +957,9 @@ namespace GravityPortals
             Vector3 oldGravity = gravityDirection;
             // Your falling direction carries through the portal.
             gravityDirection = Portal.GravityAfterPass(from, to, oldGravity);
+            // On a spin map, then point it along the field where you came out (this is how a
+            // portal flips you between outward and inward gravity).
+            gravityDirection = SpinGravity.Apply(gravityDirection, Body.position);
             if (Vector3.Angle(oldGravity, gravityDirection) > 1f)
                 Sfx.Play2D(SoundBank.GravityShift, 0.4f, UnityEngine.Random.Range(0.95f, 1.05f));
 

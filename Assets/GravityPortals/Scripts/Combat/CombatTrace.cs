@@ -63,6 +63,7 @@ namespace GravityPortals
                 {
                     if (hits[i].distance >= worldDist) continue;
                     if (ignoreCollider != null && ignoreCollider(hits[i].collider)) continue;
+                    if (ShootThrough.Is(hits[i].collider)) continue; // glass
                     worldDist = hits[i].distance;
                     worldHit = hits[i];
                     hitWorld = true;

@@ -46,6 +46,17 @@ Each has an `EditorPrefs` version key; bumping its `Version` const makes it rebu
 - `SkybridgeBuilder` (folded space station: floor and ceiling 40 m apart joined by a hull bend on +X, ~10 scaffolding
   bridges at random spanning floor to ceiling, sideways gravity on their 26 m walkways with airlock doors at both ends;
   floor and ceiling furnished separately at random; layout data in `SkybridgeLayout`, fixed `Seed`)
+- `MobiusSpinBuilder` (shown as "Möbius Spin" via `MapList.Pretty`; Skybridge station materials; spin-gravity
+  station: two concentric rings round world Z, outer walkway gravity outward,
+  inner corridor gravity inward, one twist door pair between them; a glass hub walked on its inside; four round
+  spoke tubes from holes in the inner ring to holes in the hub (walk anywhere round the wall, rounded lips at both
+  ends); a door from the outer ring to the hub; layout data in `MobiusSpinLayout`). Spin gravity is the scene's
+  `SpinGravity` component holding a `SpinField` (pure maths: rings keep their sign, tubes point away from their centre
+  line, lips point at their core circle, ring eases into lip over 1.5 m round each hole, hub points out from the
+  centre). `SpinGravity.Apply` runs every
+  physics step and after a portal pass (players, props); the server checks it along the move
+  (`SpinGravity.MatchesAlong`, 6 degrees). Maps without the component are unaffected. Hub glass colliders carry
+  `ShootThrough`: hitscan shots and portal sight checks pass, players and bolts don't
 - `PortalTestLabBuilder` (24 test rooms; signs show expected landings computed with `GravityAfterPass`)
 - `MainMenuBuilder` (menu/lobby scene, `LobbyState` prefab, session prefab list)
 

@@ -61,6 +61,7 @@ namespace GravityPortals
         void FixedUpdate()
         {
             if (!SimulatesLocally) return;
+            gravityDirection = SpinGravity.Apply(gravityDirection, Body.position); // spin maps only
             Body.AddForce(gravityDirection * gravityStrength, ForceMode.Acceleration);
         }
 
@@ -82,7 +83,7 @@ namespace GravityPortals
         protected override void OnTeleported(Portal from, Portal to, Quaternion newRotation)
         {
             // Same rule as players.
-            GravityDirection = Portal.GravityAfterPass(from, to, GravityDirection);
+            GravityDirection = SpinGravity.Apply(Portal.GravityAfterPass(from, to, GravityDirection), Body.position);
 
             // Tell clients to jump straight to the exit instead of sliding across the map.
             if (netTransform != null && netObject != null && netObject.IsSpawned && NetMode.IsServer)

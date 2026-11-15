@@ -35,6 +35,19 @@ namespace GravityPortals
         public bool Doorway, WorldWrap;
     }
 
+    /// <summary>A smooth triangle surface in world space, with per-vertex normals (the side you
+    /// walk on). Built as one mesh object, with a mesh collider if <see cref="Collide"/>.</summary>
+    public sealed class PavilionSurface
+    {
+        public string Name;
+        public PavilionMat Material;
+        public bool Collide = true;
+        public readonly List<Vector3> Vertices = new List<Vector3>();
+        public readonly List<Vector3> Normals = new List<Vector3>();
+        public readonly List<Vector2> UVs = new List<Vector2>();
+        public readonly List<int> Triangles = new List<int>();
+    }
+
     public struct PavilionLight
     {
         public Vector3 Position;
@@ -84,6 +97,9 @@ namespace GravityPortals
         public readonly List<Bounds> Buildings = new List<Bounds>();
         /// <summary>Bounds of the bridges and beams linking rooms and buildings.</summary>
         public readonly List<Bounds> Connectors = new List<Bounds>();
+        /// <summary>Smooth curved surfaces (meshes with their own collider), for floors that boxes
+        /// would make faceted, like the Möbius Spin's tubes.</summary>
+        public readonly List<PavilionSurface> Surfaces = new List<PavilionSurface>();
 
         public static PavilionLayout Generate(int seed) => new PavilionGenerator(seed).Run();
 
