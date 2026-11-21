@@ -361,7 +361,7 @@ namespace GravityPortals
             foreach (var pc in all)
             {
                 if (!pc.IsSpawned || !pc.alive.Value) continue;
-                var s = pc == this ? pc.net.AcceptedState : pc.net.StateAt(now - rewind);
+                var s = pc == this ? pc.net.AcceptedState : pc.net.StateSeenAt(now - rewind, rtt * 0.5);
                 capsules.Add(new HitCapsule
                 {
                     Center = s.Position,
@@ -671,6 +671,42 @@ namespace GravityPortals
             bool fell = (area != null && !area.Contains(at))
                 || (SpinGravity.Current != null && SpinGravity.Current.OutOfBounds(at)); // off a spinning ring
             if (fell) ServerFellIntoVoid();
+            else if (ServerCaughtByCube()) ServerCrushed();
+        }
+
+        // The turning cube: a turning layer sweeping through you (when you're not riding it) crushes you.
+        static readonly Collider[] crushHits = new Collider[16];
+        int crushSteps;
+        const int CrushSteps = 3; // overlapping the sweep this many physics steps running
+
+        bool ServerCaughtByCube()
+        {
+            var turns = CubeTurns.Current;
+            if (turns == null || !turns.Pose.Turning || Time.time < protectedUntil) { crushSteps = 0; return false; }
+            var pose = turns.Pose;
+            var s = net.AcceptedState;
+            // Riding the turning layer: it carries you, it can't sweep through you.
+            if (s.Piece >= 0 && s.Piece < 27 && pose.InMove[s.Piece]) { crushSteps = 0; return false; }
+            Vector3 up = s.Rotation * Vector3.up;
+            float radius = Mathf.Max(0.05f, controller.CapsuleRadius - 0.03f);
+            float half = Mathf.Max(0f, controller.CapsuleHalfHeight - controller.CapsuleRadius);
+            int n = Physics.OverlapCapsuleNonAlloc(s.Position + up * half, s.Position - up * half, radius, crushHits, ~0, QueryTriggerInteraction.Ignore);
+            bool caught = false;
+            for (int i = 0; i < n && !caught; i++)
+            {
+                var piece = CubePiece.Of(crushHits[i]);
+                if (piece != null && pose.InMove[piece.index]) caught = true;
+            }
+            crushSteps = caught ? crushSteps + 1 : 0;
+            return crushSteps >= CrushSteps;
+        }
+
+        void ServerCrushed()
+        {
+            crushSteps = 0;
+            health.Value = 0;
+            fallWraps.Clear();
+            ServerDie(this, current, false, crushed: true);
         }
 
         void ServerFellIntoVoid()
@@ -703,12 +739,12 @@ namespace GravityPortals
             if (fallWraps.Count >= FallWrapsToDie) ServerFellIntoVoid();
         }
 
-        void ServerDie(PlayerCombat attacker, int weaponIndex, bool headshot, bool fell = false)
+        void ServerDie(PlayerCombat attacker, int weaponIndex, bool headshot, bool fell = false, bool crushed = false)
         {
             alive.Value = false;
             deaths.Value++;
             if (attacker != null && attacker != this) attacker.kills.Value++;
-            KillFeedRpc(attacker != null ? attacker.OwnerClientId : OwnerClientId, OwnerClientId, (byte)weaponIndex, headshot, fell);
+            KillFeedRpc(attacker != null ? attacker.OwnerClientId : OwnerClientId, OwnerClientId, (byte)weaponIndex, headshot, fell, crushed);
             lastAttacker = null;
             StartCoroutine(RespawnAfterDelay());
         }
@@ -792,11 +828,12 @@ namespace GravityPortals
         }
 
         [Rpc(SendTo.ClientsAndHost)]
-        void KillFeedRpc(ulong killer, ulong victim, byte weaponIndex, bool headshot, bool fell)
+        void KillFeedRpc(ulong killer, ulong victim, byte weaponIndex, bool headshot, bool fell, bool crushed)
         {
             string victimName = LobbyState.NameOf(victim);
             string text;
-            if (fell) text = killer == victim
+            if (crushed) text = $"{victimName} was crushed by the cube";
+            else if (fell) text = killer == victim
                 ? $"{victimName} fell into the void"
                 : $"{LobbyState.NameOf(killer)} knocked {victimName} into the void";
             else text = killer == victim
@@ -807,7 +844,7 @@ namespace GravityPortals
 
             var local = NetworkManager.Singleton != null ? NetworkManager.Singleton.LocalClientId : ulong.MaxValue;
             var me = Find(local);
-            if (me != null && victim == local) me.killedBy = killer == victim ? "yourself" : LobbyState.NameOf(killer);
+            if (me != null && victim == local) me.killedBy = crushed ? "the cube" : killer == victim ? "yourself" : LobbyState.NameOf(killer);
         }
 
         // ================================================================== third-person guns

@@ -503,9 +503,14 @@ namespace GravityPortals
             float dt = Time.fixedDeltaTime;
             Body.rotation = bodyRotation;
 
+            // The turning cube: standing on a turning layer carries you with it.
+            bool riding = RideCube(dt, out Quaternion rideFrame);
+
             // Spin maps only: down follows the station's spin field (out from or in toward its axis).
             Vector3 gravityBefore = gravityDirection;
-            gravityDirection = SpinGravity.Apply(gravityDirection, Body.position);
+            gravityDirection = riding
+                ? SpinGravity.ApplyRiding(gravityDirection, Body.position, rideFrame)
+                : SpinGravity.Apply(gravityDirection, Body.position);
             FollowCurve(gravityBefore, gravityDirection);
             Vector3 gravityUp = -gravityDirection;
             UpdateGround(bodyRotation * Vector3.up, gravityUp);
@@ -649,7 +654,52 @@ namespace GravityPortals
             if (fallSpeed > maxFallSpeed) velocity -= gravityDirection * (fallSpeed - maxFallSpeed);
             lastFallSpeed = grounded ? 0f : Mathf.Max(0f, fallSpeed);
 
+            // Leaving a turning layer (jumping off it): keep the speed it was carrying you at.
+            if (riding && !grounded) velocity += rideVelocity;
+
             Body.linearVelocity = velocity;
+        }
+
+        /// <summary>The turning cube's piece you're standing on (grid index), or -1. Sent to the
+        /// server so it can tell riders from people caught in a turn, and so others draw you on it.</summary>
+        public int RidingPiece { get; private set; } = -1;
+        Vector3 rideVelocity;
+
+        /// <summary>
+        /// The turning cube: if you were standing on a piece, move with it for this physics step
+        /// (exactly as far as it turns round the cube centre), with your momentum relative to it.
+        /// Your body only tilts with the floor: on a face that spins like a turntable you're
+        /// carried round the circle but keep facing the same way (no spinning view). The view
+        /// eases through the tilt like on any curve (<see cref="EaseViewOnCurves"/>).
+        /// Returns true while the piece is turning, with that layer's rotation so far.
+        /// </summary>
+        bool RideCube(float dt, out Quaternion frame)
+        {
+            frame = Quaternion.identity;
+            rideVelocity = Vector3.zero;
+            var turns = CubeTurns.Current;
+            var piece = wasGrounded && turns != null ? CubePiece.Of(groundCollider) : null;
+            RidingPiece = piece != null ? piece.index : -1;
+            if (piece == null) return false;
+            var pose = turns.Pose;
+            if (!pose.Turning || !pose.InMove[piece.index]) return false;
+            frame = pose.TurnRotation;
+
+            Quaternion step = turns.StepDelta(piece.index);
+            Vector3 c = turns.Centre;
+            Vector3 before = Body.position;
+            Vector3 after = c + step * (before - c);
+            Body.position = after;
+            rideVelocity = (after - before) / dt;
+            Body.linearVelocity = step * Body.linearVelocity;
+            gravityDirection = step * gravityDirection; // carried with the floor (the field then agrees)
+            groundNormal = step * groundNormal;
+
+            Vector3 up = bodyRotation * Vector3.up;
+            Quaternion tilt = Quaternion.FromToRotation(up, step * up);
+            bodyRotation = tilt * bodyRotation;
+            Body.rotation = bodyRotation;
+            return true;
         }
 
         // ------------------------------------------------------------------ crouch and slide
@@ -1085,6 +1135,9 @@ namespace GravityPortals
             pitch = newPitch;
             viewEaseReset = true; // placed somewhere new: no view easing from where you were
             grounded = false;
+            wasGrounded = false; // and not standing on whatever you stood on before (no cube ride from it)
+            groundCollider = null;
+            RidingPiece = -1;
         }
 
         /// <summary>Positions a remote player. <paramref name="snap"/> skips smoothing (teleports, respawns).</summary>

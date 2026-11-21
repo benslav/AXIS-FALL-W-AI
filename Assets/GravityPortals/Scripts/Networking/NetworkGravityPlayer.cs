@@ -18,10 +18,14 @@ namespace GravityPortals
         public short ToPortal;
         public byte ResetCount;       // bumps every server respawn/correction
         public ushort Sequence;       // lets the server drop updates that arrive out of order
+        public double Clock;          // turning cube: the shared clock this state was simulated at
+        public sbyte Piece;           // turning cube: the piece stood on (grid index), or -1
 
         public void NetworkSerialize<T>(BufferSerializer<T> s) where T : IReaderWriter
         {
             s.SerializeValue(ref Sequence);
+            s.SerializeValue(ref Clock);
+            s.SerializeValue(ref Piece);
             s.SerializeValue(ref Position);
             s.SerializeValue(ref Rotation);
             s.SerializeValue(ref Pitch);
@@ -36,7 +40,8 @@ namespace GravityPortals
         public bool Equals(PlayerNetState o) =>
             Position == o.Position && Rotation == o.Rotation && Pitch == o.Pitch && Gravity == o.Gravity &&
             Velocity == o.Velocity && TeleportCount == o.TeleportCount && FromPortal == o.FromPortal &&
-            ToPortal == o.ToPortal && ResetCount == o.ResetCount && Sequence == o.Sequence;
+            ToPortal == o.ToPortal && ResetCount == o.ResetCount && Sequence == o.Sequence &&
+            Clock == o.Clock && Piece == o.Piece;
 
         /// <summary>True if anything another player would notice changed.</summary>
         public bool DiffersNoticeablyFrom(PlayerNetState o) =>
@@ -44,7 +49,7 @@ namespace GravityPortals
             Quaternion.Angle(Rotation, o.Rotation) > 0.3f ||
             Mathf.Abs(Pitch - o.Pitch) > 0.3f ||
             (Velocity - o.Velocity).sqrMagnitude > 0.05f * 0.05f ||
-            Gravity != o.Gravity || TeleportCount != o.TeleportCount || ResetCount != o.ResetCount;
+            Gravity != o.Gravity || TeleportCount != o.TeleportCount || ResetCount != o.ResetCount || Piece != o.Piece;
 
         public override bool Equals(object obj) => obj is PlayerNetState o && Equals(o);
         public override int GetHashCode() => Position.GetHashCode() ^ (TeleportCount << 8) ^ (ResetCount << 16);
@@ -119,7 +124,16 @@ namespace GravityPortals
         const double HistoryLength = 1.0;
 
         // Remote side
-        struct Snapshot { public double Time; public PlayerNetState State; }
+        struct Snapshot
+        {
+            public double Time;
+            public PlayerNetState State;
+            // On the turning cube, standing on a piece: where on the piece (its home frame), so the
+            // player is drawn on the piece as it is drawn now, not where it was 100 ms ago.
+            public bool OnPiece;
+            public Vector3 LocalPosition;
+            public Quaternion LocalRotation;
+        }
         readonly List<Snapshot> snapshots = new List<Snapshot>();
         bool snapNext = true;
 
@@ -194,6 +208,8 @@ namespace GravityPortals
                 FromPortal = lastFrom,
                 ToPortal = lastTo,
                 ResetCount = resetCount,
+                Clock = CubeClock(),
+                Piece = (sbyte)controller.RidingPiece,
             };
 
             // Bandwidth: skip ticks where nothing visible changed (with a keep-alive).
@@ -275,6 +291,14 @@ namespace GravityPortals
             {
                 if (Vector3.Distance(s.Position, accepted.Position) > allowed) return false;
                 // Gravity only ever changes by going through a portal.
+                if (SpinGravity.IsCube && CubeTurns.Current != null)
+                {
+                    // The cube turns during the move: check against it as the client saw it.
+                    double now = CubeTurns.Current.PhysicsClock;
+                    double clockTo = ClampClock(s.Clock, now);
+                    double clockFrom = System.Math.Min(ClampClock(accepted.Clock, now), clockTo);
+                    return SpinGravity.MatchesAlong(s.Gravity, accepted.Gravity, accepted.Position, s.Position, gravityTolerance, clockFrom, clockTo);
+                }
                 return SpinGravity.MatchesAlong(s.Gravity, accepted.Gravity, accepted.Position, s.Position, gravityTolerance);
             }
 
@@ -295,6 +319,14 @@ namespace GravityPortals
             return to.DistanceOutsideZone(s.Position) <= allowed + 1f;
         }
 
+        /// <summary>A client's reported cube clock, kept within the last second (a client can't
+        /// claim the cube was somewhere it hasn't been lately, or will be).</summary>
+        static double ClampClock(double clock, double now) =>
+            double.IsNaN(clock) ? now : System.Math.Max(now - 1.0, System.Math.Min(now + 0.25, clock));
+
+        /// <summary>The shared cube clock now (0 off the cube).</summary>
+        static double CubeClock() => CubeTurns.Current != null ? CubeTurns.Current.PhysicsClock : 0.0;
+
         static bool Finite(Vector3 v) =>
             !(float.IsNaN(v.x) || float.IsNaN(v.y) || float.IsNaN(v.z) ||
               float.IsInfinity(v.x) || float.IsInfinity(v.y) || float.IsInfinity(v.z));
@@ -303,6 +335,8 @@ namespace GravityPortals
         {
             var s = accepted;
             s.Velocity = Vector3.zero;
+            // On the turning cube, put a rider back where their piece has carried that spot since.
+            if (s.Piece >= 0 && CubeTurns.Current != null) s = OnPieceAt(s, CubeClock());
             ServerReset(s);
         }
 
@@ -335,6 +369,16 @@ namespace GravityPortals
             return accepted;
         }
 
+        /// <summary>Server: where a shooter saw this player. Like <see cref="StateAt"/>, but on the
+        /// turning cube a player standing on a piece was drawn on that piece as the shooter saw it
+        /// (at <paramref name="shooterLatency"/> seconds ago), not where the piece was back then.</summary>
+        public PlayerNetState StateSeenAt(double time, double shooterLatency)
+        {
+            var s = StateAt(time);
+            if (s.Piece >= 0 && CubeTurns.Current != null) s = OnPieceAt(s, CubeClock() - shooterLatency);
+            return s;
+        }
+
         /// <summary>Server: the latest validated state (where this player really is now).</summary>
         public PlayerNetState AcceptedState => accepted;
 
@@ -359,11 +403,31 @@ namespace GravityPortals
                 TeleportCount = accepted.TeleportCount,
                 FromPortal = -1,
                 ToPortal = -1,
+                Piece = -1,
             });
+        }
+
+        /// <summary>A state on a cube piece moved (with its piece) from its own clock to
+        /// <paramref name="clock"/>: where that spot of the piece is then. Gravity and body turn with it.</summary>
+        static PlayerNetState OnPieceAt(PlayerNetState s, double clock)
+        {
+            var turns = CubeTurns.Current;
+            if (turns == null || s.Piece < 0 || s.Piece >= 27) return s;
+            Quaternion then = turns.PoseAt(s.Clock).Pieces[s.Piece];
+            Quaternion now = turns.PoseAt(clock).Pieces[s.Piece];
+            Quaternion move = now * CubeSchedule.Conjugate(then);
+            Vector3 c = turns.Centre;
+            s.Position = c + move * (s.Position - c);
+            s.Rotation = move * s.Rotation;
+            s.Gravity = move * s.Gravity;
+            s.Velocity = move * s.Velocity;
+            s.Clock = clock;
+            return s;
         }
 
         void ServerReset(PlayerNetState s)
         {
+            s.Clock = CubeClock();
             s.ResetCount = (byte)(accepted.ResetCount + 1);
             accepted = s;
             acceptedTime = Time.timeAsDouble;
@@ -391,7 +455,16 @@ namespace GravityPortals
                     if (to != null) to.PlayPassFx(current.Position);
                 }
             }
-            snapshots.Add(new Snapshot { Time = Time.timeAsDouble, State = current });
+            var snap = new Snapshot { Time = Time.timeAsDouble, State = current };
+            var turns = CubeTurns.Current;
+            if (turns != null && current.Piece >= 0 && current.Piece < 27)
+            {
+                Quaternion back = CubeSchedule.Conjugate(turns.PoseAt(current.Clock).Pieces[current.Piece]);
+                snap.OnPiece = true;
+                snap.LocalPosition = back * (current.Position - turns.Centre);
+                snap.LocalRotation = back * current.Rotation;
+            }
+            snapshots.Add(snap);
             if (snapshots.Count > 32) snapshots.RemoveAt(0);
         }
 
@@ -411,23 +484,23 @@ namespace GravityPortals
             if (snapshots.Count == 0) return;
 
             double renderTime = Time.timeAsDouble - interpolationDelay;
-            PlayerNetState a = snapshots[0].State, b = a;
+            Snapshot sa = snapshots[0], sb = sa;
             float t = 0f;
 
             for (int i = snapshots.Count - 1; i >= 0; i--)
             {
                 if (snapshots[i].Time <= renderTime)
                 {
-                    a = snapshots[i].State;
+                    sa = snapshots[i];
                     if (i + 1 < snapshots.Count)
                     {
-                        b = snapshots[i + 1].State;
+                        sb = snapshots[i + 1];
                         double span = snapshots[i + 1].Time - snapshots[i].Time;
                         t = span > 1e-5 ? (float)((renderTime - snapshots[i].Time) / span) : 1f;
                     }
                     else
                     {
-                        b = a;
+                        sb = sa;
                     }
                     // Older snapshots are no longer needed.
                     if (i > 1) snapshots.RemoveRange(0, i - 1);
@@ -436,12 +509,21 @@ namespace GravityPortals
             }
 
             t = Mathf.Clamp01(t);
-            controller.ApplyRemoteState(
-                Vector3.Lerp(a.Position, b.Position, t),
-                Quaternion.Slerp(a.Rotation, b.Rotation, t),
-                Mathf.Lerp(a.Pitch, b.Pitch, t),
-                b.Gravity,
-                snapNext);
+            PlayerNetState a = sa.State, b = sb.State;
+            Vector3 position = Vector3.Lerp(a.Position, b.Position, t);
+            Quaternion rotation = Quaternion.Slerp(a.Rotation, b.Rotation, t);
+            Vector3 gravity = b.Gravity;
+            var turns = CubeTurns.Current;
+            if (turns != null && sa.OnPiece && sb.OnPiece && a.Piece == b.Piece)
+            {
+                // Standing on a cube piece: drawn on the piece as it is drawn this frame.
+                Quaternion piece = turns.RenderPose.Pieces[a.Piece];
+                Quaternion snapPiece = turns.PoseAt(b.Clock).Pieces[b.Piece];
+                position = turns.Centre + piece * Vector3.Lerp(sa.LocalPosition, sb.LocalPosition, t);
+                rotation = piece * Quaternion.Slerp(sa.LocalRotation, sb.LocalRotation, t);
+                gravity = piece * (CubeSchedule.Conjugate(snapPiece) * b.Gravity);
+            }
+            controller.ApplyRemoteState(position, rotation, Mathf.Lerp(a.Pitch, b.Pitch, t), gravity, snapNext);
             snapNext = false;
         }
     }

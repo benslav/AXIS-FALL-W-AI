@@ -23,6 +23,11 @@ namespace GravityPortals
         public SpinField field = new SpinField();
         [Tooltip("Cube rooms with rounded edges. Used instead of the spin field when it has any rooms.")]
         public RoomField rooms = new RoomField();
+        [Tooltip("The turning cube: walk anywhere outside and inside; turning layers carry their gravity round. Used instead of the others when active.")]
+        public CubeField cube = new CubeField { inside = new RoomField() };
+
+        /// <summary>The cube's pose right now (set by its driver; null = every layer in place).</summary>
+        public CubePose CubePose { get; set; }
 
         public static SpinGravity Current { get; private set; }
 
@@ -33,15 +38,20 @@ namespace GravityPortals
             if (Current == this) Current = null;
         }
 
-        bool UseRooms => rooms != null && rooms.Active;
+        bool UseCube => cube != null && cube.Active;
+        bool UseRooms => !UseCube && rooms != null && rooms.Active;
 
-        public Vector3 Resolve(Vector3 g, Vector3 p) => UseRooms ? rooms.Resolve(g, p - axisPoint) : field.Resolve(g, p - axisPoint);
+        public Vector3 Resolve(Vector3 g, Vector3 p) =>
+            UseCube ? cube.Resolve(g, p - axisPoint, CubePose) :
+            UseRooms ? rooms.Resolve(g, p - axisPoint) : field.Resolve(g, p - axisPoint);
 
         /// <summary>The rule for everyone: on a field map, follow the field; elsewhere, unchanged.</summary>
         public static Vector3 Apply(Vector3 g, Vector3 p) => Current != null ? Current.Resolve(g, p) : g;
 
         /// <summary>Fallen off a ring into the void, or out of every room.</summary>
-        public bool OutOfBounds(Vector3 p) => UseRooms ? rooms.OutOfBounds(p - axisPoint) : field.OutOfBounds(p - axisPoint);
+        public bool OutOfBounds(Vector3 p) =>
+            UseCube ? cube.OutOfBounds(p - axisPoint) :
+            UseRooms ? rooms.OutOfBounds(p - axisPoint) : field.OutOfBounds(p - axisPoint);
 
         /// <summary>Server check: does <paramref name="reported"/> match the field anywhere along the
         /// move from <paramref name="from"/> to <paramref name="to"/>? (The client works gravity out
@@ -49,7 +59,7 @@ namespace GravityPortals
         public static bool MatchesAlong(Vector3 reported, Vector3 previous, Vector3 from, Vector3 to, float tolerance)
         {
             if (Current == null) return Vector3.Angle(reported, previous) < tolerance;
-            if (Current.UseRooms)
+            if (Current.UseRooms || Current.UseCube)
             {
                 // The room field depends on the gravity you have (it only takes over close to it),
                 // and over one update a walk round a curve turns it a long way: follow it along the
@@ -65,6 +75,40 @@ namespace GravityPortals
             for (int i = 0; i <= 4; i++)
                 if (Vector3.Angle(reported, Current.Resolve(previous, Vector3.Lerp(from, to, i / 4f))) < tolerance) return true;
             return false;
+        }
+
+        // ------------------------------------------------------------------ the turning cube
+
+        /// <summary>True on the turning cube.</summary>
+        public static bool IsCube => Current != null && Current.UseCube;
+
+        /// <summary>Gravity for a traveller carried by a turning layer of the cube (<paramref name="frame"/>
+        /// = that layer's rotation so far): follows the layer wherever they stand on it. Elsewhere the
+        /// usual rule.</summary>
+        public static Vector3 ApplyRiding(Vector3 g, Vector3 p, Quaternion frame) =>
+            IsCube ? Current.cube.ResolveInFrame(g, p - Current.axisPoint, frame) : Apply(g, p);
+
+        /// <summary>Server check on the cube: like <see cref="MatchesAlong(Vector3,Vector3,Vector3,Vector3,float)"/>,
+        /// but the cube keeps turning during the move, so follow the field along the move in time too:
+        /// from the cube at <paramref name="clockFrom"/> to the cube at <paramref name="clockTo"/>
+        /// (the clocks the client simulated at). Riders and everyone else are followed both ways.</summary>
+        public static bool MatchesAlong(Vector3 reported, Vector3 previous, Vector3 from, Vector3 to, float tolerance,
+            double clockFrom, double clockTo)
+        {
+            var turns = CubeTurns.Current;
+            if (!IsCube || turns == null) return MatchesAlong(reported, previous, from, to, tolerance);
+            var f = Current.cube;
+            Vector3 g = previous, riding = previous;
+            for (int i = 0; i <= 12; i++)
+            {
+                float u = i / 12f;
+                var pose = turns.PoseAt(clockFrom + (clockTo - clockFrom) * u);
+                Vector3 p = Vector3.Lerp(from, to, u) - Current.axisPoint;
+                g = f.Resolve(g, p, pose);
+                riding = pose.Turning ? f.ResolveInFrame(riding, p, pose.TurnRotation) : f.Resolve(riding, p, pose);
+                if (Vector3.Angle(reported, g) < tolerance || Vector3.Angle(reported, riding) < tolerance) return true;
+            }
+            return Vector3.Angle(reported, previous) < tolerance;
         }
     }
 }

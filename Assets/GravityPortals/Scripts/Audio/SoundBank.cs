@@ -29,6 +29,9 @@ namespace GravityPortals
         public static AudioClip Empty => empty ??= Make("Empty", 0.05f, t => Sine(t, 900f) * Mathf.Exp(-t * 120f) * 0.5f);
         public static AudioClip PortalHum => portalHum ??= Make("PortalHum", 2f, HumSample);
         public static AudioClip Death => death ??= Make("Death", 0.7f, DeathSample);
+        public static AudioClip Klaxon => klaxon ??= Make("Klaxon", 0.9f, KlaxonSample);
+        public static AudioClip Grind => grind ??= MakeFiltered("Grind", 4f, GrindSample, 0.1f);
+        static AudioClip klaxon, grind;
 
         // ------------------------------------------------------------------ voices
 
@@ -88,6 +91,28 @@ namespace GravityPortals
 
         static float DeathSample(float t) =>
             (Sine(t, Mathf.Lerp(600f, 60f, t / 0.7f)) * 0.6f + Noise() * 0.25f) * Mathf.Exp(-t * 4f);
+
+        /// <summary>The turning cube's warning: a two-tone klaxon, four notes.</summary>
+        static float KlaxonSample(float t)
+        {
+            float f = (int)(t / 0.225f) % 2 == 0 ? 440f : 330f;
+            float note = t % 0.225f;
+            float env = Mathf.Clamp01(note * 60f) * Mathf.Clamp01((0.225f - note) * 40f);
+            float tone = Mathf.Sign(Sine(t, f)) * 0.35f + Sine(t, f * 2f) * 0.2f; // brassy square-ish
+            return tone * env * 0.7f;
+        }
+
+        /// <summary>The cube's machinery turning a layer (4 s): a low grind with gear teeth clicking,
+        /// rising and falling with the turn's speed.</summary>
+        static float GrindSample(float t)
+        {
+            float u = Mathf.Clamp01(t / 4f);
+            float speed = 6f * u * (1f - u) / 1.5f; // matches the eased turn, 0..1
+            float rumble = Sine(t, 42f) * 0.5f + Sine(t, 63f) * 0.25f + Noise() * 0.35f;
+            float rate = 6f + 22f * speed;
+            float tick = Mathf.Exp(-((t * rate) % 1f) * 18f) * Noise();
+            return (rumble * 0.6f + tick * 0.5f) * Mathf.Clamp01(speed * 1.6f) * 0.7f;
+        }
 
         // ------------------------------------------------------------------ building blocks
 

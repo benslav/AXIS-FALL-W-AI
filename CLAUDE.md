@@ -61,6 +61,18 @@ Each has an `EditorPrefs` version key; bumping its `Version` const makes it rebu
   through two smoothing stages (`GravityPlayerController.EaseViewOnCurves`, view and aim only, not the body).
   Maps without the component are unaffected. Hub glass colliders carry
   `ShootThrough`: hitscan shots and portal sight checks pass, players and bolts don't
+- `TurningCubeBuilder` ("The Turning Cube": a hollow 3x3x3 cube of 14 m pieces, 42 m across, walkable all over
+  outside (gravity into the cube, rounded edges) and inside (Tesseract-style `RoomField`); layout data in `CubeLayout`).
+  Only the six outer layers turn (never the middle slices: the centres are bolted to the core's axles and only spin,
+  so the six door pairs, one per centre piece outside -> inside, and the spawns never leave their face). Turns are a
+  pure function of seed + Netcode server time (`CubeSchedule`, exact integer piece matrices; seed = `LobbyState.MapSeed`
+  or a fixed one), so nothing is sent; `CubeTurns` moves each piece (kinematic Rigidbody + `CubePiece`) to its
+  end-of-step pose in FixedUpdate and draws it at the exact render-time pose in Update. Gravity is `SpinGravity.cube`
+  (`CubeField`: a turning layer's slab uses the rest field turned with it). Riders are carried by
+  `GravityPlayerController.RideCube` (tilt only, no turntable spin, by the user's choice) and `GravityBody`; the server
+  checks gravity at the client's reported clock (`PlayerNetState.Clock`/`Piece`) and crushes non-riders a turning
+  piece sweeps through (`PlayerCombat.ServerCaughtByCube`, the user's choice). The user is sensitive to motion
+  sickness: keep view turns gentle
 - `PortalTestLabBuilder` (24 test rooms; signs show expected landings computed with `GravityAfterPass`)
 - `MainMenuBuilder` (menu/lobby scene, `LobbyState` prefab, session prefab list)
 

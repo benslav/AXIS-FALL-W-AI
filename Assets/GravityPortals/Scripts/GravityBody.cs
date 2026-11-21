@@ -61,8 +61,40 @@ namespace GravityPortals
         void FixedUpdate()
         {
             if (!SimulatesLocally) return;
-            gravityDirection = SpinGravity.Apply(gravityDirection, Body.position); // spin maps only
+            if (RideCube(out Quaternion frame))
+                gravityDirection = SpinGravity.ApplyRiding(gravityDirection, Body.position, frame);
+            else
+                gravityDirection = SpinGravity.Apply(gravityDirection, Body.position); // field maps only
             Body.AddForce(gravityDirection * gravityStrength, ForceMode.Acceleration);
+        }
+
+        // The turning cube: resting on a turning piece carries you round with it (like players).
+        CubePiece restingOn;
+        float restingTime = -10f;
+
+        void OnCollisionStay(Collision collision)
+        {
+            var piece = CubePiece.Of(collision.collider);
+            if (piece == null) return;
+            restingOn = piece;
+            restingTime = Time.fixedTime;
+        }
+
+        bool RideCube(out Quaternion frame)
+        {
+            frame = Quaternion.identity;
+            var turns = CubeTurns.Current;
+            if (turns == null || restingOn == null || Time.fixedTime - restingTime > Time.fixedDeltaTime * 2.5f) return false;
+            var pose = turns.Pose;
+            if (!pose.Turning || !pose.InMove[restingOn.index]) return false;
+            frame = pose.TurnRotation;
+            Quaternion step = turns.StepDelta(restingOn.index);
+            Vector3 c = turns.Centre;
+            Body.position = c + step * (Body.position - c);
+            Body.rotation = step * Body.rotation;
+            Body.linearVelocity = step * Body.linearVelocity;
+            gravityDirection = step * gravityDirection;
+            return true;
         }
 
         float cachedExtent = -1f;
