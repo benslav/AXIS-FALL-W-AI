@@ -35,4 +35,7 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/GravityPortals/Scenes/MobiusSpin.unity
     guid: 71dbf8a7b941b7242a76f91876e13d20
+  - enabled: 1
+    path: Assets/GravityPortals/Scenes/TheTesseract.unity
+    guid: d507c911dfcc39145b12e25db2b642b8
   m_configObjects: {}

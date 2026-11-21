@@ -43,6 +43,10 @@ public static class GravityArenaBuilder
         // from your camera but visible in portals.
         EnsureLayer(8, "PortalSurface");
         EnsureLayer(9, "LocalPlayer");
+        // Portals seen through portals (maps that turn it on): deeper views and the flat fills.
+        EnsureLayer(10, PortalRecursion.Layer2Name);
+        EnsureLayer(11, PortalRecursion.Layer3Name);
+        EnsureLayer(12, PortalRecursion.FillLayerName);
 
         var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
@@ -59,10 +63,11 @@ public static class GravityArenaBuilder
 
         var crate = CratePrefab(crateMat);
         var projectile = ProjectilePrefab();
-        var player = PlayerPrefab(projectile);
+        var grenade = GrenadePrefab();
+        var player = PlayerPrefab(projectile, grenade);
         AssetDatabase.DeleteAsset($"{PrefabFolder}/Ball.prefab"); // replaced by the Plasma Launcher
         BuildCamera(cameraPosition, cameraTarget);
-        BuildNetworking(player, projectile, crate);
+        BuildNetworking(player, projectile, crate, grenade);
 
         EditorSceneManager.SaveScene(scene, scenePath);
         AddToBuildSettings(scenePath);
@@ -128,6 +133,56 @@ public static class GravityArenaBuilder
         return SavePrefab(bolt, "PlasmaBolt");
     }
 
+    /// <summary>The thrown grenade: a small glowing ball that bounces, falls along its thrower's
+    /// gravity and goes through portals. Also used by the main menu's session prefab list.</summary>
+    internal static GameObject GrenadePrefab()
+    {
+        var accent = WeaponDefs.GrenadeDef.Accent;
+        var ball = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        ball.name = "Grenade";
+        ball.transform.localScale = Vector3.one * 0.3f;
+        ball.GetComponent<Renderer>().sharedMaterial = LitMaterial("Grenade", new Color(0.18f, 0.22f, 0.16f), null, Vector2.one);
+        ball.GetComponent<Renderer>().shadowCastingMode = ShadowCastingMode.Off;
+        var bouncy = new PhysicsMaterial("Grenade")
+        {
+            bounciness = 0.45f, dynamicFriction = 0.5f, staticFriction = 0.6f,
+            bounceCombine = PhysicsMaterialCombine.Maximum,
+        };
+        ball.GetComponent<Collider>().sharedMaterial = SaveAsset(bouncy, $"{MaterialFolder}/Grenade.physicsMaterial");
+        // A glowing band, so you can see it bounce in a dark corner.
+        var band = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+        Object.DestroyImmediate(band.GetComponent<Collider>());
+        band.name = "Band";
+        band.transform.SetParent(ball.transform, false);
+        band.transform.localScale = new Vector3(1.04f, 0.08f, 1.04f);
+        band.GetComponent<Renderer>().sharedMaterial = EmissiveMaterial("GrenadeBand", accent * 3f);
+        band.GetComponent<Renderer>().shadowCastingMode = ShadowCastingMode.Off;
+        AddNetworkedPhysics(ball, 0.5f);
+        var body = ball.AddComponent<GravityBody>();
+        body.gravityStrength = 20f;
+        var glow = ball.AddComponent<Light>();
+        glow.type = LightType.Point;
+        glow.color = accent;
+        glow.range = 2.5f;
+        glow.intensity = 1.2f;
+        glow.shadows = LightShadows.None;
+        ball.AddComponent<Grenade>();
+        return SavePrefab(ball, "Grenade");
+    }
+
+    static T SaveAsset<T>(T asset, string path) where T : Object
+    {
+        var existing = AssetDatabase.LoadAssetAtPath<T>(path);
+        if (existing != null)
+        {
+            EditorUtility.CopySerialized(asset, existing);
+            AssetDatabase.SaveAssets();
+            return existing;
+        }
+        AssetDatabase.CreateAsset(asset, path);
+        return asset;
+    }
+
     /// <summary>Server-simulated rigidbody: clients get a kinematic copy that NetworkTransform moves.</summary>
     static void AddNetworkedPhysics(GameObject go, float mass)
     {
@@ -142,7 +197,7 @@ public static class GravityArenaBuilder
         go.AddComponent<NetworkRigidbody>();
     }
 
-    static GameObject PlayerPrefab(GameObject projectilePrefab)
+    static GameObject PlayerPrefab(GameObject projectilePrefab, GameObject grenadePrefab)
     {
         var player = new GameObject("Player");
         var capsule = player.AddComponent<CapsuleCollider>();
@@ -156,6 +211,7 @@ public static class GravityArenaBuilder
         player.AddComponent<NetworkGravityPlayer>();
         var combat = player.AddComponent<PlayerCombat>();
         combat.projectilePrefab = projectilePrefab.GetComponent<NetworkObject>();
+        combat.grenadePrefab = grenadePrefab.GetComponent<NetworkObject>();
 
         // What other players see. Your own copy is hidden from you.
         var bodyMesh = GameObject.CreatePrimitive(PrimitiveType.Capsule);
@@ -196,7 +252,7 @@ public static class GravityArenaBuilder
         camGo.AddComponent<AudioListener>();
     }
 
-    static void BuildNetworking(GameObject player, GameObject projectile, GameObject crate)
+    static void BuildNetworking(GameObject player, GameObject projectile, GameObject crate, GameObject grenade)
     {
         var go = new GameObject("NetworkManager");
         var transport = go.AddComponent<UnityTransport>();
@@ -210,6 +266,7 @@ public static class GravityArenaBuilder
         var list = ScriptableObject.CreateInstance<NetworkPrefabsList>();
         list.Add(new NetworkPrefab { Prefab = projectile });
         list.Add(new NetworkPrefab { Prefab = crate });
+        list.Add(new NetworkPrefab { Prefab = grenade });
         AssetDatabase.CreateAsset(list, listPath);
         manager.NetworkConfig.Prefabs.NetworkPrefabsLists.Clear();
         manager.NetworkConfig.Prefabs.NetworkPrefabsLists.Add(list);

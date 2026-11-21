@@ -8,6 +8,9 @@ namespace GravityPortals
     {
         static readonly List<SpawnPoint> all = new List<SpawnPoint>();
 
+        [Tooltip("Which team spawns here (-1 = anyone). Free-for-all ignores it; marked for a team mode.")]
+        public int team = -1;
+
         void OnEnable() => all.Add(this);
         void OnDisable() => all.Remove(this);
 

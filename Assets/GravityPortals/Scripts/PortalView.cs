@@ -68,10 +68,17 @@ namespace GravityPortals
             viewCamera = go.AddComponent<Camera>();
             viewCamera.enabled = false;
             surfaceLayer = LayerPortalSurface;
-            // Don't draw portal surfaces inside portal views (no recursion).
+            // Portal surfaces are left out of portal views (PortalRecursion adds nested views on maps that ask).
             if (surfaceLayer >= 0) viewCamera.cullingMask = ~(1 << surfaceLayer);
 
-            var data = viewCamera.GetUniversalAdditionalCameraData();
+            ConfigureCamera(viewCamera);
+            material.SetVector(ViewRectId, new Vector4(0f, 0f, 1f, 1f));
+        }
+
+        /// <summary>Settings every portal camera shares.</summary>
+        internal static void ConfigureCamera(Camera cam)
+        {
+            var data = cam.GetUniversalAdditionalCameraData();
             // No post-processing here: the main camera applies it to the portal surface along
             // with everything else, so the view through a portal looks exactly like the real
             // thing once you step through (no colour or brightness pop).
@@ -84,9 +91,19 @@ namespace GravityPortals
             data.volumeLayerMask = 0;
             data.stopNaN = false;
             data.dithering = false;
-            viewCamera.useOcclusionCulling = false;
-            material.SetVector(ViewRectId, new Vector4(0f, 0f, 1f, 1f));
+            cam.useOcclusionCulling = false;
         }
+
+        // For the portals seen inside this one (PortalRecursion).
+        internal Portal Owner => portal;
+        internal Camera ViewCamera => viewCamera;
+        internal Material SurfaceMaterial => material;
+        internal Renderer Surface => surface;
+        internal bool Wanted => wanted;
+        internal float Coverage => coverage;
+        internal RenderTexture Target => target;
+        /// <summary>How this view's projection is narrowed to its rectangle of the screen (identity = whole screen).</summary>
+        internal Matrix4x4 Crop { get; private set; } = Matrix4x4.identity;
 
         void OnEnable()
         {
@@ -117,6 +134,8 @@ namespace GravityPortals
                 v.UpdateView(main);
                 v.SetRendering(v.wanted, main);
             }
+            // Portals seen inside portal views (maps that ask for it).
+            PortalRecursion.Update(main, views);
         }
 
         void SetRendering(bool on, Camera main)
@@ -278,6 +297,7 @@ namespace GravityPortals
             // Narrow the projection to the portal's rectangle of the screen, stretched over the
             // whole texture. The surface shader maps screen positions into that rectangle, so it
             // still lines up exactly; and culling skips everything outside it.
+            Crop = Matrix4x4.identity;
             Rect r = screenRect;
             if (r.width < 0.999f || r.height < 0.999f)
             {
@@ -287,6 +307,7 @@ namespace GravityPortals
                 crop.m11 = 1f / r.height;
                 crop.m03 = -cx / r.width;
                 crop.m13 = -cy / r.height;
+                Crop = crop;
                 projection = crop * projection;
             }
             viewCamera.projectionMatrix = projection;

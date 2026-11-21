@@ -44,6 +44,8 @@ namespace GravityPortals
 
         [Tooltip("Networked plasma bolt the server spawns.")]
         public NetworkObject projectilePrefab;
+        [Tooltip("Networked grenade the server spawns when you throw one (G).")]
+        public NetworkObject grenadePrefab;
         public float respawnDelay = 3f;
         [Tooltip("Spawn protection after respawning (seconds).")]
         public float spawnProtection = 1.5f;
@@ -112,6 +114,7 @@ namespace GravityPortals
                 ammo[i] = serverAmmo[i] = WeaponDefs.All[i].MagazineSize;
                 serverReloadEnd[i] = -1;
             }
+            grenades = serverGrenades = WeaponDefs.GrenadesPerLife;
             reloadEnd = -1f;
         }
 
@@ -200,6 +203,7 @@ namespace GravityPortals
             }
             if (Input.GetKeyDown(KeyCode.R)) StartReload();
             if (Input.GetKeyDown(KeyCode.K)) SelfDestructRpc();
+            if (locked && Input.GetKeyDown(KeyCode.G)) ThrowGrenade();
 
             // Aim down sights (right mouse): iron sights, or the full scope on the sniper.
             SetScoped(locked && def.ScopeFov > 0f && Input.GetMouseButton(1) && Time.time >= switchEnd && reloadEnd < 0f);
@@ -427,11 +431,61 @@ namespace GravityPortals
             body.Body.linearVelocity = direction * def.ProjectileSpeed;
         }
 
-        /// <summary>Server: splash damage and knockback around a point. Walls block it.</summary>
+        // ================================================================== grenades
+
+        int grenades, serverGrenades;
+        float nextThrow;
+        double serverNextThrow;
+
+        void ThrowGrenade()
+        {
+            if (grenades <= 0 || Time.time < nextThrow || grenadePrefab == null) return;
+            grenades--;
+            nextThrow = Time.time + WeaponDefs.GrenadeCooldown;
+            Sfx.Play2D(SoundBank.Jump, 0.5f, 1.5f);
+            ThrowRpc(controller.EyePosition, controller.AimRotation * Vector3.forward);
+        }
+
+        [Rpc(SendTo.Server)]
+        void ThrowRpc(Vector3 origin, Vector3 direction, RpcParams rpcParams = default)
+        {
+            if (rpcParams.Receive.SenderClientId != OwnerClientId || !alive.Value || grenadePrefab == null) return;
+            if (direction.sqrMagnitude < 0.5f || serverGrenades <= 0) return;
+            double now = Time.timeAsDouble;
+            if (now < serverNextThrow - 0.1) return; // a little slack for network bunching
+            var me = net.AcceptedState;
+            if (Vector3.Distance(origin, me.Position) > controller.eyeHeight + 2.5f + me.Velocity.magnitude * 0.2f) return;
+            serverGrenades--;
+            serverNextThrow = now + WeaponDefs.GrenadeCooldown;
+            direction.Normalize();
+
+            // Out of the hand, or just short of a wall right in front of you.
+            float reach = 0.7f;
+            if (Physics.SphereCast(origin, 0.15f, direction, out var hit, reach + 0.2f, ~0, QueryTriggerInteraction.Ignore)
+                && !IsPlayerCollider(hit.collider))
+                reach = Mathf.Max(0f, hit.distance - 0.2f);
+
+            var obj = Instantiate(grenadePrefab, origin + direction * reach, Quaternion.LookRotation(direction));
+            var body = obj.GetComponent<GravityBody>();
+            body.GravityDirection = me.Gravity;
+            obj.GetComponent<Grenade>().thrower = OwnerClientId;
+            foreach (var own in GetComponentsInChildren<Collider>())
+                foreach (var gc in obj.GetComponentsInChildren<Collider>())
+                    Physics.IgnoreCollision(own, gc);
+            obj.Spawn(true);
+            // Thrown with a little loft (against your own gravity) and some of your own speed.
+            body.Body.linearVelocity = direction * WeaponDefs.GrenadeThrowSpeed - me.Gravity.normalized * 2.5f + me.Velocity * 0.5f;
+            body.Body.angularVelocity = Random.onUnitSphere * 8f;
+        }
+
+        /// <summary>Server: splash damage and knockback around a point. Walls block it; portals
+        /// don't: a blast next to a portal also comes out of the other side (as if the two were one
+        /// opening), measured along the straight line through it. Nobody is hit twice.</summary>
         public static void ServerExplosion(Vector3 point, Vector3 normal, int weaponIndex, ulong shooterClientId)
         {
             var def = WeaponDefs.Get(weaponIndex);
             Vector3 origin = point + normal * 0.1f;
+            var sources = BlastSources(origin, def.SplashRadius);
 
             foreach (var pc in all.ToArray())
             {
@@ -439,43 +493,104 @@ namespace GravityPortals
                 var s = pc.net.AcceptedState;
                 Vector3 up = s.Rotation * Vector3.up;
                 float seg = pc.controller.CapsuleHalfHeight - pc.controller.CapsuleRadius;
-                Vector3 closest = CombatTrace.ClosestPointOnSegment(s.Position - up * seg, s.Position + up * seg, origin);
-                float distance = Mathf.Max(0f, Vector3.Distance(closest, origin) - pc.controller.CapsuleRadius);
+
+                // The nearest way the blast reaches this player.
+                float distance = float.MaxValue;
+                Vector3 push = normal;
+                foreach (var src in sources)
+                {
+                    Vector3 closest = CombatTrace.ClosestPointOnSegment(s.Position - up * seg, s.Position + up * seg, src.Origin);
+                    float d = Mathf.Max(0f, Vector3.Distance(closest, src.Origin) - pc.controller.CapsuleRadius);
+                    if (d > def.SplashRadius || d >= distance || !Reaches(src, origin, closest)) continue;
+                    distance = d;
+                    Vector3 away = closest - src.Origin;
+                    push = away.sqrMagnitude > 1e-4f ? away.normalized : src.Exit != null ? src.Exit.Normal : normal;
+                }
                 if (distance > def.SplashRadius) continue;
-                if (Blocked(origin, closest)) continue;
 
                 float falloff = 1f - distance / def.SplashRadius;
                 float damage = Mathf.Lerp(def.MinSplashDamage, def.Damage, falloff);
                 bool self = pc.OwnerClientId == shooterClientId;
                 if (self) damage *= def.SelfDamageScale;
 
-                Vector3 push = closest - origin;
-                push = push.sqrMagnitude > 1e-4f ? push.normalized : normal;
                 pc.net.KnockbackRpc(push * def.Knockback * Mathf.Lerp(0.35f, 1f, falloff));
                 pc.ServerDamage(Mathf.RoundToInt(damage), shooterClientId, push, false, weaponIndex);
             }
 
             // Shove server-simulated props, and tear through screens in the blast.
             var shooter = Find(shooterClientId);
-            foreach (var c in Physics.OverlapSphere(origin, def.SplashRadius, ~0, QueryTriggerInteraction.Ignore))
-            {
-                var screen = BreakableScreen.Of(c);
-                if (screen != null)
+            var done = new HashSet<Collider>();
+            foreach (var src in sources)
+                foreach (var c in Physics.OverlapSphere(src.Origin, def.SplashRadius, ~0, QueryTriggerInteraction.Ignore))
                 {
-                    float d = Vector3.Distance(c.ClosestPoint(origin), origin);
-                    float dmg = Mathf.Lerp(def.MinSplashDamage, def.Damage, 1f - d / def.SplashRadius);
-                    if (screen.ServerDamage(dmg))
+                    if (done.Contains(c)) continue;
+                    // Straight from the blast: as before. Out of a portal: only what the blast reaches through it.
+                    if (src.Exit != null && !Reaches(src, origin, c.ClosestPoint(src.Origin))) continue;
+                    var screen = BreakableScreen.Of(c);
+                    if (screen != null)
                     {
-                        if (shooter != null) shooter.ServerBreakScreen(screen.id);
-                        else if (all.Count > 0) all[0].ServerBreakScreen(screen.id);
-                        else BreakableScreen.BreakLocal(screen.id);
+                        done.Add(c);
+                        float d = Vector3.Distance(c.ClosestPoint(src.Origin), src.Origin);
+                        float dmg = Mathf.Lerp(def.MinSplashDamage, def.Damage, 1f - d / def.SplashRadius);
+                        if (screen.ServerDamage(dmg))
+                        {
+                            if (shooter != null) shooter.ServerBreakScreen(screen.id);
+                            else if (all.Count > 0) all[0].ServerBreakScreen(screen.id);
+                            else BreakableScreen.BreakLocal(screen.id);
+                        }
+                        continue;
                     }
-                    continue;
+                    var rb = c.attachedRigidbody;
+                    if (rb == null || rb.isKinematic || rb.GetComponent<GravityBody>() == null) continue;
+                    done.Add(c);
+                    rb.AddExplosionForce(def.Knockback, src.Origin, def.SplashRadius, 0f, ForceMode.VelocityChange);
                 }
-                var rb = c.attachedRigidbody;
-                if (rb == null || rb.isKinematic || rb.GetComponent<GravityBody>() == null) continue;
-                rb.AddExplosionForce(def.Knockback, origin, def.SplashRadius, 0f, ForceMode.VelocityChange);
+        }
+
+        /// <summary>One way a blast reaches: straight from where it went off (no portals), or out of
+        /// a portal it went off in front of, from the matching point behind the linked portal.</summary>
+        struct BlastSource
+        {
+            public Vector3 Origin;
+            public Portal Entry, Exit;
+        }
+
+        static List<BlastSource> BlastSources(Vector3 origin, float radius)
+        {
+            var list = new List<BlastSource> { new BlastSource { Origin = origin } };
+            foreach (var p in Portal.All)
+            {
+                if (p == null || p.linkedPortal == null || p.worldWrap) continue;
+                Vector3 local = p.transform.InverseTransformPoint(origin);
+                if (local.z <= 0f || local.z > radius) continue; // in front of the opening, and near it
+                float hx = p.size.x * 0.5f, hy = p.size.y * 0.5f;
+                Vector3 nearest = p.transform.TransformPoint(new Vector3(Mathf.Clamp(local.x, -hx, hx), Mathf.Clamp(local.y, -hy, hy), 0f));
+                if (Vector3.Distance(nearest, origin) > radius) continue;
+                list.Add(new BlastSource
+                {
+                    Origin = Portal.TransferMatrix(p, p.linkedPortal).MultiplyPoint3x4(origin),
+                    Entry = p, Exit = p.linkedPortal,
+                });
             }
+            return list;
+        }
+
+        /// <summary>Does the blast from this source reach the target: a clear line, and for a portal
+        /// source a line out through the exit's opening, clear on both sides of it.</summary>
+        static bool Reaches(BlastSource src, Vector3 origin, Vector3 target)
+        {
+            if (src.Exit == null) return !Blocked(origin, target);
+            var q = src.Exit;
+            Vector3 n = q.Normal, d = target - src.Origin;
+            float denom = Vector3.Dot(d, n);
+            if (denom <= 1e-4f) return false; // has to head out of the exit
+            float t = Vector3.Dot(q.transform.position - src.Origin, n) / denom;
+            if (t < 0f || t > 1f) return false;
+            Vector3 crossing = src.Origin + d * t;
+            Vector3 l = q.transform.InverseTransformPoint(crossing);
+            if (Mathf.Abs(l.x) > q.size.x * 0.5f || Mathf.Abs(l.y) > q.size.y * 0.5f) return false;
+            Vector3 atEntry = Portal.TransferMatrix(q, src.Entry).MultiplyPoint3x4(crossing);
+            return !Blocked(origin, atEntry + src.Entry.Normal * 0.02f) && !Blocked(crossing + n * 0.02f, target);
         }
 
         /// <summary>Server: a screen broke. Break it here and on every client.</summary>
@@ -829,6 +944,7 @@ namespace GravityPortals
             var right = new GUIStyle(label) { alignment = TextAnchor.MiddleRight, fontSize = 22 };
             GUI.Label(new Rect(w - 260, h - 56, 240, 30), $"{ammo[current]} / {def.MagazineSize}", right);
             GUI.Label(new Rect(w - 260, h - 82, 240, 26), def.Name, new GUIStyle(right) { fontSize = 14 });
+            GUI.Label(new Rect(w - 260, h - 104, 240, 24), $"Grenades (G): {grenades}", new GUIStyle(right) { fontSize = 13 });
             if (reloadEnd > 0f)
             {
                 float p = 1f - (reloadEnd - Time.time) / def.ReloadTime;

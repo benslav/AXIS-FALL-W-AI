@@ -71,6 +71,21 @@ namespace GravityPortals
             },
         };
 
-        public static WeaponDef Get(int index) => All[Mathf.Clamp(index, 0, All.Length - 1)];
+        /// <summary>The grenade: thrown with G alongside any gun, so it isn't one of the weapons in <see cref="All"/>.
+        /// Its index only names it (kill feed, explosion effects).</summary>
+        public const int Grenade = 3;
+        public const int GrenadesPerLife = 2;
+        public const float GrenadeThrowSpeed = 15f;
+        public const float GrenadeFuse = 2.2f;
+        public const float GrenadeCooldown = 0.8f;
+
+        public static readonly WeaponDef GrenadeDef = new WeaponDef
+        {
+            Name = "Grenade", Kind = WeaponKind.Projectile, MagazineSize = GrenadesPerLife, FireInterval = GrenadeCooldown,
+            Damage = 95, SplashRadius = 5.5f, MinSplashDamage = 12, SelfDamageScale = 0.5f, Knockback = 14f,
+            Accent = new Color(0.55f, 1f, 0.3f),
+        };
+
+        public static WeaponDef Get(int index) => index == Grenade ? GrenadeDef : All[Mathf.Clamp(index, 0, All.Length - 1)];
     }
 }

@@ -335,7 +335,7 @@ namespace GravityPortals
                 viewEaseReset = false;
                 return;
             }
-            float k = 1f - Mathf.Exp(-curveViewEase * dt);
+            float k = 1f - Mathf.Exp(-MapOptions.CurveViewEase(curveViewEase) * dt);
             viewUpStage1 = Vector3.Slerp(viewUpStage1, bodyUp, k).normalized;
             viewUpStage2 = Vector3.Slerp(viewUpStage2, viewUpStage1, k).normalized;
             // Never let the view fall too far behind (going fast over a tight curve): pull it along
@@ -375,7 +375,8 @@ namespace GravityPortals
 
             Vector3 look = bodyRotation * Quaternion.Euler(pitch, 0f, 0f) * Vector3.forward;
 
-            float step = Mathf.Max(angle * (1f - Mathf.Exp(-cameraEaseRate * dt)), cameraEaseMinSpeed * dt);
+            float step = Mathf.Max(angle * (1f - Mathf.Exp(-MapOptions.GravityTurnRate(cameraEaseRate) * dt)),
+                MapOptions.GravityTurnMinSpeed(cameraEaseMinSpeed) * dt);
 
             // On spin maps gravity only ever jumps through a portal, and a pass carries the body
             // round with it, so any gap here is the floor curving: always turn with it (falling back
@@ -1163,7 +1164,7 @@ namespace GravityPortals
             GUI.Label(new Rect(12, 10, 520, 22),
                 $"Gravity: {gravity}   Speed: {Body.linearVelocity.magnitude:0.0}   {(grounded ? "Grounded" : "Airborne")}");
             if (Cursor.lockState != CursorLockMode.Locked)
-                GUI.Label(new Rect(12, 32, 1600, 22), "Click to play. WASD move, Shift sprint, Space jump, Mouse fire, Right mouse aim, F grapple (hold), Ctrl crouch/slide (jump while sliding to launch), R reload, 1/2/3 or wheel switch weapon (3 = sniper), Tab scores, K respawn, Esc release mouse.");
+                GUI.Label(new Rect(12, 32, 1600, 22), "Click to play. WASD move, Shift sprint, Space jump, Mouse fire, Right mouse aim, F grapple (hold), Ctrl crouch/slide (jump while sliding to launch), R reload, G grenade, 1/2/3 or wheel switch weapon (3 = sniper), Tab scores, K respawn, Esc release mouse.");
             if (TestMap.Active)
                 GUI.Label(new Rect(12, 54, 400, 22), "Test map: H = back to the start");
 
@@ -1187,7 +1188,7 @@ namespace GravityPortals
         {
             warningPortal = null;
             warningStrength = 0f;
-            if (!alive) return;
+            if (!alive || !MapOptions.GravityWarnings) return;
 
             Vector3 center = Body.position;
             Vector3 velocity = Body.linearVelocity;

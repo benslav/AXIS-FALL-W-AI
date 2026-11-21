@@ -195,6 +195,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::GravityPortals.PlayerCombat
   ShowTopMostFoldoutHeaderGroup: 1
   projectilePrefab: {fileID: 6233505385605497485, guid: 20f4524885fc98a40be4abe2e5e93762, type: 3}
+  grenadePrefab: {fileID: 5655546851667907816, guid: 29974ef6b823d1047b693c89730ecfe3, type: 3}
   respawnDelay: 3
   spawnProtection: 1.5
   maxRewind: 0.35

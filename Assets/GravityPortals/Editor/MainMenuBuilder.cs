@@ -17,7 +17,7 @@ public static class MainMenuBuilder
     const string ScenePath = "Assets/GravityPortals/Scenes/MainMenu.unity";
     const string PrefabFolder = "Assets/GravityPortals/Prefabs";
     const string VersionKey = "ClaudeTest.MainMenu.Version";
-    const int Version = 1;
+    const int Version = 2; // 2: grenades in the session prefab list
 
     static MainMenuBuilder()
     {
@@ -47,6 +47,10 @@ public static class MainMenuBuilder
 
         var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
+        // Grenades came after the other prefabs: make one if no map has been rebuilt since.
+        var grenade = AssetDatabase.LoadAssetAtPath<GameObject>($"{PrefabFolder}/Grenade.prefab");
+        if (grenade == null) grenade = GravityArenaBuilder.GrenadePrefab();
+
         var camGo = new GameObject("Menu Camera");
         camGo.tag = "MainCamera";
         var cam = camGo.AddComponent<Camera>();
@@ -65,7 +69,7 @@ public static class MainMenuBuilder
         string listPath = $"{PrefabFolder}/SessionPrefabs.asset";
         AssetDatabase.DeleteAsset(listPath);
         var list = ScriptableObject.CreateInstance<NetworkPrefabsList>();
-        foreach (var prefab in new[] { player, crate, bolt, lobby }) list.Add(new NetworkPrefab { Prefab = prefab });
+        foreach (var prefab in new[] { player, crate, bolt, grenade, lobby }) list.Add(new NetworkPrefab { Prefab = prefab });
         AssetDatabase.CreateAsset(list, listPath);
         manager.NetworkConfig.Prefabs.NetworkPrefabsLists.Clear();
         manager.NetworkConfig.Prefabs.NetworkPrefabsLists.Add(list);
